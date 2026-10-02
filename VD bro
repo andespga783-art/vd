@@ -192,7 +192,7 @@ local Boxes = {
     Aimlock = Tabs.Player:AddLeftGroupbox("AimBot", "crosshair"),
     Flashlight = Tabs.Player:AddLeftGroupbox("Silent Flashlight", "sun"),
     PistolV2 = Tabs.Player:AddLeftGroupbox("SILENT AIM PISTOL V2", "crosshair"),
-    Parry = Tabs.Player:AddLeftGroupbox("Parry", "swords"),
+    ParryV1 = Tabs.Player:AddLeftGroupbox("Auto Parry V1", "swords"),
     ParryV2 = Tabs.Player:AddLeftGroupbox("Auto Parry V2", "swords"),
     Crosshair = Tabs.Player:AddLeftGroupbox("Crosshair", "crosshair"),
     
@@ -293,13 +293,10 @@ local LastFlee = 0
 local GunAim = { Enabled = false, Holding = false, TargetMode = "Killer", Strength = 1, Predict = true, PredictStrength = 0.12, FOV = 250, VisibilityCheck = true, Target = nil, AimPart = "HumanoidRootPart" }
 local AttackAim = { Enabled = false, Holding = false, Strength = 1, Predict = true, PredictStrength = 0.12, FOV = 250, VisibilityCheck = true, AimPart = "HumanoidRootPart" }
 local Killer = { KillAll = false, AutoHook = false, AutoAttack = false, SilentAimVeil = false, SilentAimVeilV2 = false, AutoCarry = false, KillRange = 500, AttackDelay = 0.45 }
-local KillerBusy = false
-local KillerTarget = nil
 local ParryActive = false
 local Masked = { Enabled = false, CurrentPower = "Cobra" }
 local MaskedPowers = {"Cobra", "Richter", "Brandon", "Rabbit", "Alex"}
 local Moonwalk = { Enabled = false, ShowButton = false, SpamSpeed = 30, Intensity = 35, SlowSpeed = 13, UseSlow = true }
-local MoonwalkConnection = nil
 local MoonwalkButton = nil
 local CameraZoom = { UnlimitedZoom = false, MaxDistance = 1000, MinDistance = 0, FOVEnabled = false, FOV = 70, DefaultFOV = 70 }
 if workspace.CurrentCamera then CameraZoom.DefaultFOV = workspace.CurrentCamera.FieldOfView end
@@ -604,6 +601,9 @@ function GB_CreateButton()
 end
 function setGenBypass(v) GenBypass.Enabled = v and true or false; GB_UpdateButton() end
 
+-- ========================================================
+-- SISTEM AUTO PARRY V1 (ASLI & EKSKLUSIF)
+-- ========================================================
 local lastParry = 0; local PARRY_DEBOUNCE = 0.2
 function pressRightClick() VirtualInputManager:SendMouseButtonEvent(0, 0, 1, true, game, 0); task.wait(); VirtualInputManager:SendMouseButtonEvent(0, 0, 1, false, game, 0) end
 function GetParryButton()
@@ -662,6 +662,38 @@ function hookKiller(char)
                 end
                 task.wait(0.03)
             end
+        end)
+    end)
+end
+
+function updateParryCircle()
+    local root = getRoot(); if not ParryRangeVisual.Enabled or not root then if ParryCircle then ParryCircle:Destroy(); ParryCircle = nil end; return end
+    if not ParryCircle then ParryCircle = Instance.new("Part"); ParryCircle.Shape = Enum.PartType.Cylinder; ParryCircle.Anchored = true; ParryCircle.CanCollide = false; ParryCircle.Material = Enum.Material.Neon; ParryCircle.Name = "ParryRangeCircle"; ParryCircle.Parent = workspace end
+    local size = Auto.ParryDistance * 2; ParryCircle.Size = Vector3.new(0.2, size, size); local yOffset = root.Size.Y / 2 + 1.5
+    ParryCircle.CFrame = CFrame.new(root.Position - Vector3.new(0, yOffset, 0)) * CFrame.Angles(0, 0, math.rad(90)); ParryCircle.Color = ParryRangeVisual.Color; ParryCircle.Transparency = ParryRangeVisual.Transparency
+end
+
+-- ========================================================
+-- SISTEM AUTO PARRY V2 (LOADSTRING EKSLUSIF - DEFAULT RADIUS 6, ANGLE 60 KUNCI)
+-- ========================================================
+getgenv().Miyako_ParryV2Config = getgenv().Miyako_ParryV2Config or {
+    Enabled = false,
+    Safety = false,
+    Aggressive = false,
+    Circle = true,
+    Radius = 6,
+    FaceSensitivity = 0.7,
+    AutoCrouch = false,
+    AntiFake = true,
+    FacingAngle = 60
+}
+
+local function loadParryV2()
+    task.spawn(function()
+        pcall(function()
+            local url = "https://raw.githubusercontent.com/Tatsumakimaki/Hisoka-Morou/refs/heads/master/Auto%20pary"
+            local execute = loadstring(game:HttpGet(url))
+            if execute then execute() end
         end)
     end)
 end
@@ -746,9 +778,7 @@ task.spawn(function()
     end
 end)
 
--- ========================================================
--- LOGIKA DARI BAHAN: AUTO KILL ALL & AUTO HOOK
--- ========================================================
+-- AUTO KILL ALL & AUTO HOOK
 function KA_GetClosestSurvivor(range, minHealth)
     local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if not root then return nil end
@@ -796,7 +826,6 @@ function KA_UpdateKillAll()
     end
 end
 
--- AUTO HOOK HELPER DARI BAHAN
 local IsAutoHooking = false
 local function GetMapCacheHooks()
     local hooks = {}
@@ -1050,12 +1079,6 @@ function drawCrosshair()
     elseif Crosshair.Style == "Dot" then local dot = CrosshairDrawings[1]; dot.Position = center; dot.Radius = Crosshair.Size / 2; dot.Color = Crosshair.Color
     elseif Crosshair.Style == "Circle" then local circle = CrosshairDrawings[1]; circle.Position = center; circle.Radius = Crosshair.Size; circle.Color = Crosshair.Color; circle.Thickness = Crosshair.Thickness end
 end
-function updateParryCircle()
-    local root = getRoot(); if not ParryRangeVisual.Enabled or not root then if ParryCircle then ParryCircle:Destroy(); ParryCircle = nil end; return end
-    if not ParryCircle then ParryCircle = Instance.new("Part"); ParryCircle.Shape = Enum.PartType.Cylinder; ParryCircle.Anchored = true; ParryCircle.CanCollide = false; ParryCircle.Material = Enum.Material.Neon; ParryCircle.Name = "ParryRangeCircle"; ParryCircle.Parent = workspace end
-    local size = Auto.ParryDistance * 2; ParryCircle.Size = Vector3.new(0.2, size, size); local yOffset = root.Size.Y / 2 + 1.5
-    ParryCircle.CFrame = CFrame.new(root.Position - Vector3.new(0, yOffset, 0)) * CFrame.Angles(0, 0, math.rad(90)); ParryCircle.Color = ParryRangeVisual.Color; ParryCircle.Transparency = ParryRangeVisual.Transparency
-end
 
 -- FUN JERK TOOL
 local JerkTool = { Enabled = false, ToolName = "Jerk Off" }; local currentJerkTool = nil
@@ -1240,7 +1263,7 @@ local PresetIds = {
 local FakeAvatarEnabled = false
 local SelectedFakeAva = PresetIds["MIYAKO 1"]
 
--- STANDAR ATTACHMENT RESMI ROBLOX R6 (AGAR POSISI AKSESORIS 100% PRESISI)
+-- STANDAR ATTACHMENT RESMI ROBLOX R6
 local DEFAULT_ATTACHMENTS = {
     HatAttachment           = { Part = "Head",      CF = CFrame.new(0, 0.6, 0) },
     HairAttachment          = { Part = "Head",      CF = CFrame.new(0, 0.6, 0) },
@@ -1310,7 +1333,6 @@ local function LoadAppearanceIntoChar(appearance, character, head)
         end
     end
 
-    -- WELD AKSESORIS RESMI ROBLOX (100% PRESISI TANPA TERBALIK)
     for _, item in pairs(items) do
         if item:IsA("Accessory") then
             local clone = item:Clone()
@@ -1559,164 +1581,7 @@ LocalPlayer.CharacterAdded:Connect(function()
 end)
 
 -- ========================================================
--- UI REGISTRATION (LENGKAP SEMUA FITUR LAMA & BARU 100%)
--- ========================================================
-
--- INFO TAB
-Boxes.Info:AddLabel("Script: Freemium")
-Boxes.Info:AddLabel("Version: 2.0.0")
-Boxes.Info:AddLabel("Game: Violence District")
-Boxes.Info:AddLabel("Dev: DEV MIYAKO")
-
-Boxes.Credits:AddLabel("Developer:")
-Boxes.Credits:AddLabel("DEV MIYAKO")
-Boxes.Credits:AddDivider()
-Boxes.Credits:AddLabel("Library:")
-Boxes.Credits:AddLabel("• Obsidian UI")
-
--- ESP TAB
-Boxes.ESP:AddCheckbox("SurvivorESP", { Text = "ESP Survivor", Default = false, Callback = function(v) ESP.Survivor = v end }):AddColorPicker("SurvivorESPColor", { Default = TeamColors.Survivor, Title = "Survivor Color", Callback = function(color) TeamColors.Survivor = color end })
-Boxes.ESP:AddCheckbox("KillerESP", { Text = "ESP Killer", Default = false, Callback = function(v) ESP.Killer = v end }):AddColorPicker("KillerESPColor", { Default = TeamColors.Killer, Title = "Killer Color", Callback = function(color) TeamColors.Killer = color end })
-Boxes.ESP:AddCheckbox("ESPGenerator", { Text = "Generator", Default = false, Callback = function(v) ESP.Generator = v end }):AddColorPicker("GeneratorColor", { Default = GeneratorColor, Title = "Generator Color", Callback = function(color) GeneratorColor = color end })
-Boxes.ESP:AddCheckbox("ESPSCP", { Text = "SCP", Default = false, Callback = function(v) ESP.SCP = v end }):AddColorPicker("SCPColor", { Default = SCPColor, Title = "SCP Color", Callback = function(color) SCPColor = color end })
-Boxes.ESP:AddCheckbox("ESPPallet", { Text = "Pallet", Default = false, Callback = function(v) ESP.Pallet = v end }):AddColorPicker("PalletColor", { Default = PalletColor, Title = "Pallet Color", Callback = function(color) PalletColor = color end })
-Boxes.ESP:AddCheckbox("ESPWindow", { Text = "Window", Default = false, Callback = function(v) ESP.Window = v end }):AddColorPicker("WindowColor", { Default = WindowColor, Title = "Window Color", Callback = function(color) WindowColor = color end })
-Boxes.ESP:AddSlider("ESPDistance", { Text = "ESP Radius", Default = 100, Min = 10, Max = 1000, Rounding = 0, Callback = function(v) ESP.Distance = v end })
-
-Boxes.ESPStatus:AddCheckbox("EnableStatus", { Text = "Enable Status ESP", Default = false, Callback = function(v) ESPStatus.Enabled = v end })
-Boxes.ESPStatus:AddCheckbox("ShowName", { Text = "Show Name", Default = true, Callback = function(v) ESPStatus.ShowName = v end })
-Boxes.ESPStatus:AddCheckbox("ShowDistance", { Text = "Show Distance", Default = true, Callback = function(v) ESPStatus.ShowDistance = v end })
-Boxes.ESPStatus:AddCheckbox("ShowHealth", { Text = "Show Health", Default = false, Callback = function(v) ESPStatus.ShowHealth = v end })
-Boxes.ESPStatus:AddSlider("StatusRadius", { Text = "Status Radius", Default = 100, Min = 20, Max = 500, Rounding = 0, Callback = function(v) ESPStatus.Radius = v end })
-
--- STREAMER TAB
-Boxes.Streamer:AddCheckbox("HideNameToggle", { Text = "Hide Name", Default = false, Callback = function(v) HideName.Enabled = v; if not v then local char = LocalPlayer.Character; local hum = char and char:FindFirstChildOfClass("Humanoid"); if hum then hum.DisplayName = LocalPlayer.DisplayName end end end })
-Boxes.Streamer:AddDropdown("SpoofNameSelect", { Text = "Select Fake Name", Values = {"Dev Miyako", "Miyako Script"}, Default = 1, Multi = false, Callback = function(val) HideName.SpoofName = val end })
-
-function loadKillerOP() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/Miyako122/Miyako/refs/heads/main/Kiler%20op"))() end) end
-Boxes.KillerOp:AddButton({ Text = "Block All Vault", Func = function() loadKillerOP(); task.wait(0.1); local count = 0; if _G.BlockAllVaults then count = _G.BlockAllVaults() end; if Library and Library.Notify then Library:Notify("Blocked " .. tostring(count) .. " Vaults!", 3) end end })
-Boxes.KillerOp:AddButton({ Text = "Unblock All Vault", Func = function() loadKillerOP(); task.wait(0.1); local count = 0; if _G.UnblockAllVaults then count = _G.UnblockAllVaults() end; if Library and Library.Notify then Library:Notify("Unblocked " .. tostring(count) .. " Vaults!", 3) end end })
-Boxes.KillerOp:AddCheckbox("NoFlashlight", { Text = "No Flashlight (Anti Blind)", Default = false, Callback = function(state) _G.KillerOP_Config = _G.KillerOP_Config or {}; _G.KillerOP_Config.NoFlashlight = state; if state then loadKillerOP() end end })
-Boxes.KillerOp:AddCheckbox("AntiBreakPallet", { Text = "Anti Break Pallet", Default = false, Callback = function(state) _G.KillerOP_Config = _G.KillerOP_Config or {}; _G.KillerOP_Config.AntiBreakPallet = state; if state then loadKillerOP() end end })
-
--- TAB EXTRA FITUR: FAKE AVATAR, KORLESS, HEADER & EMOTE
-Boxes.FakeAvatarV2:AddDropdown("FakeAvatarPreset", {
-    Text = "Fake Avatar Preset",
-    Values = {
-        "MIYAKO 1", "MIYAKO 2", "MIYAKO 3", "MIYAKO 4", "MIYAKO 5", "MIYAKO 6",
-        "MIYAKO 7", "MIYAKO 8", "MIYAKO 9", "MIYAKO 10", "MIYAKO 11", "MIYAKO 12",
-        "MIYAKO 13", "MIYAKO 14", "MIYAKO 15", "MIYAKO 16", "MIYAKO 17", "MIYAKO 18",
-        "MIYAKO 19", "MIYAKO 20", "MIYAKO 21", "MIYAKO 22", "MIYAKO 23", "MIYAKO 24",
-        "MIYAKO 25", "MIYAKO 26", "MIYAKO 27"
-    },
-    Default = 1,
-    Multi = false,
-    Callback = function(val)
-        SelectedFakeAva = PresetIds[val] or PresetIds["MIYAKO 1"]
-        if FakeAvatarEnabled then ApplyFakeAvatar() end
-    end
-})
-
-Boxes.FakeAvatarV2:AddCheckbox("EnableFakeAvatar", {
-    Text = "Enable Fake Avatar",
-    Default = false,
-    Callback = function(v)
-        FakeAvatarEnabled = v
-        if v then
-            ApplyFakeAvatar()
-        else
-            local char = LocalPlayer.Character
-            if char then
-                local hum = char:FindFirstChildOfClass("Humanoid")
-                if hum then
-                    pcall(function()
-                        local app = Players:GetCharacterAppearanceAsync(LocalPlayer.UserId)
-                        if app then
-                            for _, obj in pairs(char:GetChildren()) do
-                                if obj:IsA("Accessory") or obj:IsA("Shirt") or obj:IsA("Pants")
-                                or obj:IsA("BodyColors") or obj:IsA("CharacterMesh") or obj:IsA("ShirtGraphic") then
-                                    obj:Destroy()
-                                end
-                            end
-                            LoadAppearanceIntoChar(app, char, char:FindFirstChild("Head"))
-                        end
-                    end)
-                end
-            end
-        end
-    end
-})
-
-local UsernameInput = ""
-Boxes.FakeAvatarV2:AddInput("FakeAvatarUsername", {
-    Text = "Fake Avatar Via Username",
-    Default = "",
-    Placeholder = "username (tanpa @)",
-    Callback = function(val)
-        UsernameInput = (val or ""):gsub("^@", "")
-    end
-})
-
-Boxes.FakeAvatarV2:AddButton({
-    Text = "Apply From Username",
-    Func = function()
-        if UsernameInput == "" then
-            if Library and Library.Notify then Library:Notify("Masukkan username dulu!", 2) end
-            return
-        end
-        local ok, userId = pcall(function() return Players:GetUserIdFromNameAsync(UsernameInput) end)
-        if not ok or not userId then
-            if Library and Library.Notify then Library:Notify("Username tidak ditemukan: " .. UsernameInput, 2) end
-            return
-        end
-        SelectedFakeAva = userId
-        ApplyFakeAvatar()
-        if Library and Library.Notify then Library:Notify("Applied: @" .. UsernameInput, 2) end
-    end
-})
-
-Boxes.FakeAvatarV2:AddCheckbox("KorlessMorphToggle", {
-    Text = "Fake Korless (Korblox)",
-    Default = false,
-    Callback = function(v)
-        KorlessMorph.Enabled = v
-        if v then
-            ApplyKorless()
-            if Library and Library.Notify then Library:Notify("Korless Morph: Enabled", 2) end
-        else
-            RemoveKorless()
-            if Library and Library.Notify then Library:Notify("Korless Morph: Disabled", 2) end
-        end
-    end
-})
-
-Boxes.FakeAvatarV2:AddCheckbox("EnableHeaderToggle", {
-    Text = "Header Title",
-    Default = false,
-    Callback = function(v)
-        HeaderEnabled = v
-        Header_Toggle(v)
-    end
-}):AddColorPicker("HeaderColorPicker", {
-    Default = Color3.fromRGB(255, 255, 255),
-    Title = "Header Color",
-    Callback = function(c)
-        HeaderColor = c
-        if HeaderState.TextLabel then HeaderState.TextLabel.TextColor3 = c end
-    end
-})
-
-Boxes.FakeAvatarV2:AddInput("HeaderTextInput", {
-    Text = "Header Text",
-    Default = "DEV MIYAKO",
-    Placeholder = "Nama header lu...",
-    Callback = function(input)
-        Header_UpdateText(input)
-    end
-})
-
--- ========================================================
--- STUN INDICATOR (SINKRON DENGAN RAW BARU)
+-- STUN INDICATOR
 -- ========================================================
 _G.Miyako_StunConfig = _G.Miyako_StunConfig or {
     Enabled = false,
@@ -1739,58 +1604,6 @@ function runStunIndicator()
         end)
     end)
 end
-
-Boxes.Stun:AddCheckbox("EnableStunIndicator", {
-    Text = "Enable Stun Indicator",
-    Default = false,
-    Callback = function(v)
-        _G.Miyako_StunConfig.Enabled = v
-        getgenv().Miyako_StunConfig.Enabled = v
-        _G.StunConfig.Enabled = v
-        if v then runStunIndicator() end
-    end
-})
-
-Boxes.Stun:AddDropdown("StunSoundChoice", {
-    Text = "Stun Sound",
-    Values = {
-        "Default", "Clash Royale", "Blash", "Coin", "Kururin Kuru",
-        "Spongebob", "Fahhhh", "Cave", "Aughhh", "Samsung",
-        "iPhone", "Siren", "Bonk", "Vine Boom", "Metal Pipe", "Bruh", "Hitmarker"
-    },
-    Default = 1,
-    Multi = false,
-    Callback = function(val)
-        _G.Miyako_StunConfig.SoundChoice = val
-        getgenv().Miyako_StunConfig.SoundChoice = val
-        _G.StunConfig.SoundChoice = val
-    end
-})
-
-Boxes.Stun:AddCheckbox("StunSoundAlert", {
-    Text = "Stun Sound Alert",
-    Default = true,
-    Callback = function(v)
-        _G.Miyako_StunConfig.SoundAlert = v
-        getgenv().Miyako_StunConfig.SoundAlert = v
-        _G.StunConfig.SoundAlert = v
-    end
-})
-
-Boxes.Stun:AddButton({
-    Text = "Preview Sound",
-    Func = function()
-        if _G.Miyako_PreviewStunSound then
-            _G.Miyako_PreviewStunSound()
-        else
-            runStunIndicator()
-            task.wait(0.4)
-            if _G.Miyako_PreviewStunSound then
-                _G.Miyako_PreviewStunSound()
-            end
-        end
-    end
-})
 
 -- LOGIKA EMBEDDED: EMOTE SYSTEM
 local EmoteSystem = {
@@ -1962,6 +1775,215 @@ local function createStaticEmoteFloatingButton()
     EmoteButtonState.Button = btn
 end
 
+-- ========================================================
+-- UI REGISTRATION
+-- ========================================================
+
+-- INFO TAB
+Boxes.Info:AddLabel("Script: Freemium")
+Boxes.Info:AddLabel("Version: 2.0.0")
+Boxes.Info:AddLabel("Game: Violence District")
+Boxes.Info:AddLabel("Dev: DEV MIYAKO")
+
+Boxes.Credits:AddLabel("Developer:")
+Boxes.Credits:AddLabel("DEV MIYAKO")
+Boxes.Credits:AddDivider()
+Boxes.Credits:AddLabel("Library:")
+Boxes.Credits:AddLabel("• Obsidian UI")
+
+-- ESP TAB
+Boxes.ESP:AddCheckbox("SurvivorESP", { Text = "ESP Survivor", Default = false, Callback = function(v) ESP.Survivor = v end }):AddColorPicker("SurvivorESPColor", { Default = TeamColors.Survivor, Title = "Survivor Color", Callback = function(color) TeamColors.Survivor = color end })
+Boxes.ESP:AddCheckbox("KillerESP", { Text = "ESP Killer", Default = false, Callback = function(v) ESP.Killer = v end }):AddColorPicker("KillerESPColor", { Default = TeamColors.Killer, Title = "Killer Color", Callback = function(color) TeamColors.Killer = color end })
+Boxes.ESP:AddCheckbox("ESPGenerator", { Text = "Generator", Default = false, Callback = function(v) ESP.Generator = v end }):AddColorPicker("GeneratorColor", { Default = GeneratorColor, Title = "Generator Color", Callback = function(color) GeneratorColor = color end })
+Boxes.ESP:AddCheckbox("ESPSCP", { Text = "SCP", Default = false, Callback = function(v) ESP.SCP = v end }):AddColorPicker("SCPColor", { Default = SCPColor, Title = "SCP Color", Callback = function(color) SCPColor = color end })
+Boxes.ESP:AddCheckbox("ESPPallet", { Text = "Pallet", Default = false, Callback = function(v) ESP.Pallet = v end }):AddColorPicker("PalletColor", { Default = PalletColor, Title = "Pallet Color", Callback = function(color) PalletColor = color end })
+Boxes.ESP:AddCheckbox("ESPWindow", { Text = "Window", Default = false, Callback = function(v) ESP.Window = v end }):AddColorPicker("WindowColor", { Default = WindowColor, Title = "Window Color", Callback = function(color) WindowColor = color end })
+Boxes.ESP:AddSlider("ESPDistance", { Text = "ESP Radius", Default = 100, Min = 10, Max = 1000, Rounding = 0, Callback = function(v) ESP.Distance = v end })
+
+Boxes.ESPStatus:AddCheckbox("EnableStatus", { Text = "Enable Status ESP", Default = false, Callback = function(v) ESPStatus.Enabled = v end })
+Boxes.ESPStatus:AddCheckbox("ShowName", { Text = "Show Name", Default = true, Callback = function(v) ESPStatus.ShowName = v end })
+Boxes.ESPStatus:AddCheckbox("ShowDistance", { Text = "Show Distance", Default = true, Callback = function(v) ESPStatus.ShowDistance = v end })
+Boxes.ESPStatus:AddCheckbox("ShowHealth", { Text = "Show Health", Default = false, Callback = function(v) ESPStatus.ShowHealth = v end })
+Boxes.ESPStatus:AddSlider("StatusRadius", { Text = "Status Radius", Default = 100, Min = 20, Max = 500, Rounding = 0, Callback = function(v) ESPStatus.Radius = v end })
+
+-- STREAMER TAB
+Boxes.Streamer:AddCheckbox("HideNameToggle", { Text = "Hide Name", Default = false, Callback = function(v) HideName.Enabled = v; if not v then local char = LocalPlayer.Character; local hum = char and char:FindFirstChildOfClass("Humanoid"); if hum then hum.DisplayName = LocalPlayer.DisplayName end end end })
+Boxes.Streamer:AddDropdown("SpoofNameSelect", { Text = "Select Fake Name", Values = {"Dev Miyako", "Miyako Script"}, Default = 1, Multi = false, Callback = function(val) HideName.SpoofName = val end })
+
+function loadKillerOP() pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/Miyako122/Miyako/refs/heads/main/Kiler%20op"))() end) end
+Boxes.KillerOp:AddButton({ Text = "Block All Vault", Func = function() loadKillerOP(); task.wait(0.1); local count = 0; if _G.BlockAllVaults then count = _G.BlockAllVaults() end; if Library and Library.Notify then Library:Notify("Blocked " .. tostring(count) .. " Vaults!", 3) end end })
+Boxes.KillerOp:AddButton({ Text = "Unblock All Vault", Func = function() loadKillerOP(); task.wait(0.1); local count = 0; if _G.UnblockAllVaults then count = _G.UnblockAllVaults() end; if Library and Library.Notify then Library:Notify("Unblocked " .. tostring(count) .. " Vaults!", 3) end end })
+Boxes.KillerOp:AddCheckbox("NoFlashlight", { Text = "No Flashlight (Anti Blind)", Default = false, Callback = function(state) _G.KillerOP_Config = _G.KillerOP_Config or {}; _G.KillerOP_Config.NoFlashlight = state; if state then loadKillerOP() end end })
+Boxes.KillerOp:AddCheckbox("AntiBreakPallet", { Text = "Anti Break Pallet", Default = false, Callback = function(state) _G.KillerOP_Config = _G.KillerOP_Config or {}; _G.KillerOP_Config.AntiBreakPallet = state; if state then loadKillerOP() end end })
+
+-- TAB EXTRA FITUR
+Boxes.FakeAvatarV2:AddDropdown("FakeAvatarPreset", {
+    Text = "Fake Avatar Preset",
+    Values = {
+        "MIYAKO 1", "MIYAKO 2", "MIYAKO 3", "MIYAKO 4", "MIYAKO 5", "MIYAKO 6",
+        "MIYAKO 7", "MIYAKO 8", "MIYAKO 9", "MIYAKO 10", "MIYAKO 11", "MIYAKO 12",
+        "MIYAKO 13", "MIYAKO 14", "MIYAKO 15", "MIYAKO 16", "MIYAKO 17", "MIYAKO 18",
+        "MIYAKO 19", "MIYAKO 20", "MIYAKO 21", "MIYAKO 22", "MIYAKO 23", "MIYAKO 24",
+        "MIYAKO 25", "MIYAKO 26", "MIYAKO 27"
+    },
+    Default = 1,
+    Multi = false,
+    Callback = function(val)
+        SelectedFakeAva = PresetIds[val] or PresetIds["MIYAKO 1"]
+        if FakeAvatarEnabled then ApplyFakeAvatar() end
+    end
+})
+
+Boxes.FakeAvatarV2:AddCheckbox("EnableFakeAvatar", {
+    Text = "Enable Fake Avatar",
+    Default = false,
+    Callback = function(v)
+        FakeAvatarEnabled = v
+        if v then
+            ApplyFakeAvatar()
+        else
+            local char = LocalPlayer.Character
+            if char then
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    pcall(function()
+                        local app = Players:GetCharacterAppearanceAsync(LocalPlayer.UserId)
+                        if app then
+                            for _, obj in pairs(char:GetChildren()) do
+                                if obj:IsA("Accessory") or obj:IsA("Shirt") or obj:IsA("Pants")
+                                or obj:IsA("BodyColors") or obj:IsA("CharacterMesh") or obj:IsA("ShirtGraphic") then
+                                    obj:Destroy()
+                                end
+                            end
+                            LoadAppearanceIntoChar(app, char, char:FindFirstChild("Head"))
+                        end
+                    end)
+                end
+            end
+        end
+    end
+})
+
+local UsernameInput = ""
+Boxes.FakeAvatarV2:AddInput("FakeAvatarUsername", {
+    Text = "Fake Avatar Via Username",
+    Default = "",
+    Placeholder = "username (tanpa @)",
+    Callback = function(val)
+        UsernameInput = (val or ""):gsub("^@", "")
+    end
+})
+
+Boxes.FakeAvatarV2:AddButton({
+    Text = "Apply From Username",
+    Func = function()
+        if UsernameInput == "" then
+            if Library and Library.Notify then Library:Notify("Masukkan username dulu!", 2) end
+            return
+        end
+        local ok, userId = pcall(function() return Players:GetUserIdFromNameAsync(UsernameInput) end)
+        if not ok or not userId then
+            if Library and Library.Notify then Library:Notify("Username tidak ditemukan: " .. UsernameInput, 2) end
+            return
+        end
+        SelectedFakeAva = userId
+        ApplyFakeAvatar()
+        if Library and Library.Notify then Library:Notify("Applied: @" .. UsernameInput, 2) end
+    end
+})
+
+Boxes.FakeAvatarV2:AddCheckbox("KorlessMorphToggle", {
+    Text = "Fake Korless (Korblox)",
+    Default = false,
+    Callback = function(v)
+        KorlessMorph.Enabled = v
+        if v then
+            ApplyKorless()
+            if Library and Library.Notify then Library:Notify("Korless Morph: Enabled", 2) end
+        else
+            RemoveKorless()
+            if Library and Library.Notify then Library:Notify("Korless Morph: Disabled", 2) end
+        end
+    end
+})
+
+Boxes.FakeAvatarV2:AddCheckbox("EnableHeaderToggle", {
+    Text = "Header Title",
+    Default = false,
+    Callback = function(v)
+        HeaderEnabled = v
+        Header_Toggle(v)
+    end
+}):AddColorPicker("HeaderColorPicker", {
+    Default = Color3.fromRGB(255, 255, 255),
+    Title = "Header Color",
+    Callback = function(c)
+        HeaderColor = c
+        if HeaderState.TextLabel then HeaderState.TextLabel.TextColor3 = c end
+    end
+})
+
+Boxes.FakeAvatarV2:AddInput("HeaderTextInput", {
+    Text = "Header Text",
+    Default = "DEV MIYAKO",
+    Placeholder = "Nama header...",
+    Callback = function(input)
+        Header_UpdateText(input)
+    end
+})
+
+Boxes.Stun:AddCheckbox("EnableStunIndicator", {
+    Text = "Enable Stun Indicator",
+    Default = false,
+    Callback = function(v)
+        _G.Miyako_StunConfig.Enabled = v
+        getgenv().Miyako_StunConfig.Enabled = v
+        _G.StunConfig.Enabled = v
+        if v then runStunIndicator() end
+    end
+})
+
+Boxes.Stun:AddDropdown("StunSoundChoice", {
+    Text = "Stun Sound",
+    Values = {
+        "Default", "Clash Royale", "Blash", "Coin", "Kururin Kuru",
+        "Spongebob", "Fahhhh", "Cave", "Aughhh", "Samsung",
+        "iPhone", "Siren", "Bonk", "Vine Boom", "Metal Pipe", "Bruh", "Hitmarker"
+    },
+    Default = 1,
+    Multi = false,
+    Callback = function(val)
+        _G.Miyako_StunConfig.SoundChoice = val
+        getgenv().Miyako_StunConfig.SoundChoice = val
+        _G.StunConfig.SoundChoice = val
+    end
+})
+
+Boxes.Stun:AddCheckbox("StunSoundAlert", {
+    Text = "Stun Sound Alert",
+    Default = true,
+    Callback = function(v)
+        _G.Miyako_StunConfig.SoundAlert = v
+        getgenv().Miyako_StunConfig.SoundAlert = v
+        _G.StunConfig.SoundAlert = v
+    end
+})
+
+Boxes.Stun:AddButton({
+    Text = "Preview Sound",
+    Func = function()
+        if _G.Miyako_PreviewStunSound then
+            _G.Miyako_PreviewStunSound()
+        else
+            runStunIndicator()
+            task.wait(0.4)
+            if _G.Miyako_PreviewStunSound then
+                _G.Miyako_PreviewStunSound()
+            end
+        end
+    end
+})
+
 Boxes.EmoteExtra:AddCheckbox("EnableEmoteToggle", {
     Text = "Enable Emote",
     Default = false,
@@ -2016,9 +2038,7 @@ Boxes.EmoteExtra:AddCheckbox("ShowEmoteFloatingButton", {
     end
 })
 
--- ========================================================
--- PLAYER TAB: SURVIVOR (AUTO SKILL CHECK TERBARU)
--- ========================================================
+-- PLAYER TAB: SURVIVOR
 _G.Miyako_SurvivorConfig = _G.Miyako_SurvivorConfig or {
     AutoPallet = false,
     PalletDistance = 20,
@@ -2071,7 +2091,6 @@ Boxes.Ability:AddDropdown("SkillCheckMode", {
 Boxes.Ability:AddCheckbox("GenBypass", { Text = "Bypas Gen", Default = false, Callback = function(v) setGenBypass(v) end })
 Boxes.Ability:AddCheckbox("BypassUnhook", { Text = "Bypas unhook", Default = false, Callback = function(v) _G.Miyako_BypassUnhook = v; if v then pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/Tatsumakimaki/Hisoka-Morou/refs/heads/master/Bypas%20un%20hook"))() end) end end })
 
--- AUTO PALLET & SLIDER JARAK
 Boxes.Ability:AddCheckbox("AutoPalletToggle", {
     Text = "Auto Pallet",
     Default = false,
@@ -2092,7 +2111,6 @@ Boxes.Ability:AddSlider("PalletDistanceSlider", {
     end
 })
 
--- FAST VAULT & SLIDER SPEED
 Boxes.Ability:AddCheckbox("FastVault", {
     Text = "Fast Vault",
     Default = false,
@@ -2108,7 +2126,6 @@ Boxes.Ability:AddSlider("VaultSpeed", {
     Callback = function(v) FastVault.Speed = v end
 })
 
--- UNLIMITED VAULT & ANTI SLOW VAULT
 Boxes.Ability:AddCheckbox("UnlimitedVaultToggle", {
     Text = "Unlimited Vault",
     Default = false,
@@ -2141,9 +2158,7 @@ Boxes.Ability:AddSlider("MoonwalkSpamSpeed", { Text = "Spam Speed", Default = Mo
 Boxes.Ability:AddSlider("MoonwalkIntensity", { Text = "Intensity", Default = Moonwalk.Intensity, Min = 1, Max = 50, Rounding = 1, Callback = function(Value) Moonwalk.Intensity = Value end })
 Boxes.Ability:AddButton({ Text = "instan escape", Func = function() teleportToFinishLine() end })
 
--- ========================================================
--- PLAYER TAB: KILLER (DENGAN LOGIKA BAHAN AUTO KILL & AUTO HOOK)
--- ========================================================
+-- PLAYER TAB: KILLER
 Boxes.Killer:AddCheckbox("AutoStalk", { Text = "Auto Stalk", Default = false, Callback = function(v) AutoStalk.Enabled = v; if v then startAutoStalk() else stopAutoStalk() end end })
 Boxes.Killer:AddCheckbox("AttackAim", { Text = "AimLock Attack", Default = false, Callback = function(v) AttackAim.Enabled = v; if v then startAttackAim() end end })
 Boxes.Killer:AddCheckbox("KillAll", { Text = "Auto Kill All", Default = false, Callback = function(v) Killer.KillAll = v end })
@@ -2160,7 +2175,7 @@ Boxes.Killer:AddDropdown("MaskedPowerSelect", { Text = "Select Power", Values = 
 Boxes.Killer:AddButton({ Text = "Activate Power", Func = function() local Event = Remotes and Remotes:FindFirstChild("Killers", true) and Remotes.Killers:FindFirstChild("Masked", true) and Remotes.Killers.Masked:FindFirstChild("Activatepower"); if Event then Event:FireServer(Masked.CurrentPower) end end })
 Boxes.Killer:AddButton({ Text = "Deactivate Power", Func = function() local Event = Remotes and Remotes:FindFirstChild("Killers", true) and Remotes.Killers:FindFirstChild("Masked", true) and Remotes.Killers.Masked:FindFirstChild("Deactivatepower"); if Event then Event:FireServer() end end })
 
--- PLAYER TAB: AIMBOT
+-- PLAYER TAB: AIMBOT (UTUH)
 Boxes.Aimlock:AddToggle("GunAimEnabled", { Text = "Aim Lock", Default = false, Callback = function(v) GunAim.Enabled = v end })
 Boxes.Aimlock:AddDropdown("GunAimTarget", { Values = {"Killer", "Survivor", "SCP"}, Default = 1, Text = "Target", Callback = function(v) GunAim.TargetMode = v end })
 Boxes.Aimlock:AddDropdown("GunAimPart", { Text = "Aim Part", Values = {"Head", "HumanoidRootPart", "Torso"}, Default = 2, Callback = function(Value) GunAim.AimPart = Value end })
@@ -2183,11 +2198,27 @@ Boxes.PistolV2:AddCheckbox("TOFLaser", { Text = "Show Laser", Default = true, Ca
 Boxes.PistolV2:AddCheckbox("TOFWallCheck", { Text = "Wall Check", Default = true, Callback = function(v) _G.Miyako_TOFConfig.WallCheck = v end })
 Boxes.PistolV2:AddCheckbox("TOFBlockKnocked", { Text = "Block When Knocked", Default = true, Callback = function(v) _G.Miyako_TOFConfig.BlockKnocked = v end })
 
--- PLAYER TAB: PARRY GROUPBOX
-Boxes.Parry:AddCheckbox("AutoParry", { Text = "Auto Parry", Default = false, Callback = function(v) Auto.Parry = v; ParryRangeVisual.Enabled = v end }):AddColorPicker("ParryRangeColor", { Default = Color3.fromRGB(255, 80, 80), Transparency = 0, Title = "Parry Range Color", Callback = function(color) ParryRangeVisual.Color = color; if ParryCircle then ParryCircle.Color = color end end })
-Boxes.Parry:AddCheckbox("ShowParryRange", { Text = "Show Parry Range", Default = true, Callback = function(Value) ParryRangeVisual.Enabled = Value; if not Value and ParryCircle then ParryCircle:Destroy(); ParryCircle = nil end end })
+-- REFERENSI ELEMENT TOGGLE PARRY V1 & V2
+local ToggleV1, ToggleV2 = nil, nil
+
+-- PLAYER TAB: AUTO PARRY V1 (SISTEM LAMA)
+ToggleV1 = Boxes.ParryV1:AddCheckbox("AutoParry", {
+    Text = "Auto Parry V1",
+    Default = false,
+    Callback = function(v)
+        if v and ToggleV2 and ToggleV2.SetValue then
+            ToggleV2:SetValue(false)
+            getgenv().Miyako_ParryV2Config.Enabled = false
+        end
+        Auto.Parry = v
+        ParryRangeVisual.Enabled = v
+    end
+})
+ToggleV1:AddColorPicker("ParryRangeColor", { Default = Color3.fromRGB(255, 80, 80), Transparency = 0, Title = "Parry Range Color", Callback = function(color) ParryRangeVisual.Color = color; if ParryCircle then ParryCircle.Color = color end end })
+
+Boxes.ParryV1:AddCheckbox("ShowParryRange", { Text = "Show Parry Range", Default = true, Callback = function(Value) ParryRangeVisual.Enabled = Value; if not Value and ParryCircle then ParryCircle:Destroy(); ParryCircle = nil end end })
 local ParryDistanceSlider = nil; local FaceSensitivitySlider = nil
-Boxes.Parry:AddCheckbox("AggressiveParry", {
+Boxes.ParryV1:AddCheckbox("AggressiveParry", {
     Text = "Aggressive Parry", Default = false,
     Callback = function(v)
         Auto.AggressiveParry = v
@@ -2204,19 +2235,78 @@ Boxes.Parry:AddCheckbox("AggressiveParry", {
         end
     end
 })
-ParryDistanceSlider = Boxes.Parry:AddSlider("ParryDistance", { Text = "Distance", Default = 15, Min = 5, Max = 20, Rounding = 0, Callback = function(v) if not Auto.IsUpdatingSlider then Auto.ParryDistance = v; if not Auto.AggressiveParry then Auto.SavedDistance = v end end end })
-FaceSensitivitySlider = Boxes.Parry:AddSlider("FaceSensitivity", { Text = "Face Sensitivity Killer", Default = 0.7, Min = -1, Max = 1, Rounding = 2, Callback = function(v) if not Auto.IsUpdatingSlider then Auto.FaceSensitivity = v; if not Auto.AggressiveParry then Auto.SavedFaceSensitivity = v end end end })
+ParryDistanceSlider = Boxes.ParryV1:AddSlider("ParryDistance", { Text = "Distance", Default = 15, Min = 5, Max = 20, Rounding = 0, Callback = function(v) if not Auto.IsUpdatingSlider then Auto.ParryDistance = v; if not Auto.AggressiveParry then Auto.SavedDistance = v end end end })
+FaceSensitivitySlider = Boxes.ParryV1:AddSlider("FaceSensitivity", { Text = "Face Sensitivity Killer", Default = 0.7, Min = -1, Max = 1, Rounding = 2, Callback = function(v) if not Auto.IsUpdatingSlider then Auto.FaceSensitivity = v; if not Auto.AggressiveParry then Auto.SavedFaceSensitivity = v end end end })
 
--- PLAYER TAB: AUTO PARRY V2
-Boxes.ParryV2:AddLabel("Wajib matikan di lobby &")
-Boxes.ParryV2:AddLabel("nyalakan lagi saat ingame!")
-_G.ConfigV2 = _G.ConfigV2 or { Surv_AutoParry = false, Surv_ParrySafety = false, Surv_ParryAggressive = false, Surv_ParryCircle = true, Surv_ParryRadius = 6, Surv_ParryFace = 1 }
-Boxes.ParryV2:AddCheckbox("AutoParryV2", { Text = "Auto Parry V2", Default = false, Callback = function(v) _G.ConfigV2.Surv_AutoParry = v; if v then pcall(function() loadstring(game:HttpGet("https://raw.githubusercontent.com/Miyako122/Miyako/refs/heads/main/Auto%20Pary%20V2"))() end) else _G.ConfigV2.Surv_ParrySafety = false; _G.ConfigV2.Surv_ParryAggressive = false end end })
-Boxes.ParryV2:AddCheckbox("ShowParryCircleV2", { Text = "Radius Parry", Default = true, Callback = function(v) _G.ConfigV2.Surv_ParryCircle = v end })
-Boxes.ParryV2:AddCheckbox("AggressiveParryV2", { Text = "Mode Agresif", Default = false, Callback = function(v) _G.ConfigV2.Surv_ParryAggressive = v end })
-Boxes.ParryV2:AddCheckbox("SafetyParryV2", { Text = "Safety Parry", Default = false, Callback = function(v) _G.ConfigV2.Surv_ParrySafety = v end })
-Boxes.ParryV2:AddSlider("ParryRadiusV2", { Text = "Radius Parry (studs)", Default = 6, Min = 4, Max = 20, Rounding = 0, Callback = function(v) _G.ConfigV2.Surv_ParryRadius = v end })
-Boxes.ParryV2:AddSlider("ParryFaceV2", { Text = "Sensitivitas Arah Hadap", Default = 1.0, Min = 0, Max = 1, Rounding = 2, Callback = function(v) _G.ConfigV2.Surv_ParryFace = v end })
+-- PLAYER TAB: AUTO PARRY V2 (LOADSTRING BARU DENGAN KUNCI EKSKLUSIF & RADIUS 6, ANGLE 60 TERSEMBUNYI)
+ToggleV2 = Boxes.ParryV2:AddCheckbox("AutoParryV2Toggle", {
+    Text = "Auto Parry V2",
+    Default = false,
+    Callback = function(v)
+        if v and ToggleV1 and ToggleV1.SetValue then
+            ToggleV1:SetValue(false)
+            Auto.Parry = false
+            ParryRangeVisual.Enabled = false
+            if ParryCircle then ParryCircle:Destroy(); ParryCircle = nil end
+        end
+        getgenv().Miyako_ParryV2Config.Enabled = v
+        if v then loadParryV2() end
+    end
+})
+
+Boxes.ParryV2:AddCheckbox("ParryAntiFake", {
+    Text = "Anti Fake Hit",
+    Default = true,
+    Callback = function(v)
+        getgenv().Miyako_ParryV2Config.AntiFake = v
+    end
+})
+
+Boxes.ParryV2:AddCheckbox("ParryAggressive", {
+    Text = "Mode Agresif",
+    Default = false,
+    Callback = function(v)
+        getgenv().Miyako_ParryV2Config.Aggressive = v
+    end
+})
+
+Boxes.ParryV2:AddCheckbox("ParrySafety", {
+    Text = "Safety Parry",
+    Default = false,
+    Callback = function(v)
+        getgenv().Miyako_ParryV2Config.Safety = v
+    end
+})
+
+Boxes.ParryV2:AddCheckbox("ShowParryCircle", {
+    Text = "Radius Parry",
+    Default = true,
+    Callback = function(v)
+        getgenv().Miyako_ParryV2Config.Circle = v
+    end
+})
+
+Boxes.ParryV2:AddSlider("ParryRadius", {
+    Text = "Radius Parry (studs)",
+    Default = 6,
+    Min = 5,
+    Max = 25,
+    Rounding = 0,
+    Callback = function(v)
+        getgenv().Miyako_ParryV2Config.Radius = v
+    end
+})
+
+Boxes.ParryV2:AddSlider("ParryFaceSens", {
+    Text = "Sensitivitas Arah Hadap",
+    Default = 0.7,
+    Min = 0.1,
+    Max = 1,
+    Rounding = 2,
+    Callback = function(v)
+        getgenv().Miyako_ParryV2Config.FaceSensitivity = v
+    end
+})
 
 -- PLAYER TAB: CROSSHAIR GROUPBOX
 Boxes.Crosshair:AddCheckbox("CrosshairEnabled", { Text = "Enable Crosshair", Default = false, Callback = function(v) Crosshair.Enabled = v end }):AddColorPicker("CrosshairColor", { Default = Color3.fromRGB(255,255,255), Title = "Crosshair Color", Transparency = 0, Callback = function(color) Crosshair.Color = color end })
