@@ -98,7 +98,7 @@ public class MainActivity extends Activity {
     TextView brand=label("◈  Z Y R I X E N",16,ZyrixenUi.CYAN,true);put(root,brand,21);
     TextView hero=label("Deobfuscate.\nUnderstand. Build.",29,ZyrixenUi.WHITE,true);
     hero.setLineSpacing(ZyrixenUi.dp(this,4),1);put(root,hero,8);
-    put(root,label("LUA ANALYSIS STUDIO  •  VERSION 0.8",11,ZyrixenUi.MUTED,false),20);
+    put(root,label("LUA ANALYSIS STUDIO  •  VERSION 0.9",11,ZyrixenUi.MUTED,false),20);
 
     LinearLayout online=ZyrixenUi.card(this);
     service=label(api.isEmpty()?"●  MODE OFFLINE":"●  MENYAMBUNG KE SERVER",13,api.isEmpty()?ZyrixenUi.CYAN:ZyrixenUi.MUTED,true);
@@ -455,13 +455,27 @@ public class MainActivity extends Activity {
         if(api.isEmpty()){
           result=localDecode(source);info="Decoded lokal • belum menjamin semua obfuscation terbuka";
         }else{
+          // Keep the same request ID if a response is lost or the connection drops.
+          byte[] hashed=java.security.MessageDigest.getInstance("SHA-256")
+            .digest(source.getBytes(StandardCharsets.UTF_8));
+          StringBuilder fingerprint=new StringBuilder(64);
+          for(byte value:hashed)fingerprint.append(String.format(java.util.Locale.ROOT,"%02x",value&0xff));
+          android.content.SharedPreferences pending=getSharedPreferences("zyrixen_pending_job_v1",MODE_PRIVATE);
+          String requestId=pending.getString("request_id","");
+          if(requestId.isEmpty()||!fingerprint.toString().equals(pending.getString("digest",""))){
+            requestId=java.util.UUID.randomUUID().toString();
+            if(!pending.edit().putString("request_id",requestId)
+                .putString("digest",fingerprint.toString()).commit())
+              throw new Exception("Tidak dapat menyimpan ID permintaan dengan aman.");
+          }
           JSONObject json=request("/deobfuscate","POST",
-            new JSONObject().put("source",source).put("request_id",java.util.UUID.randomUUID().toString()));
+            new JSONObject().put("source",source).put("request_id",requestId));
+          pending.edit().clear().apply();
           result=json.optString("result",source);
           int changes=json.optInt("transformations",0);
           String creditText=json.optBoolean("unlimited",false)?"UNLIMITED":
             json.optInt("credits",0)+" kredit tersisa";
-          final String summary=changes==0?"Tidak ada transformasi • kredit tidak dipotong":
+          final String summary=json.optBoolean("replayed",false)?"Permintaan ulang • kredit tidak dipotong lagi":changes==0?"Tidak ada transformasi • kredit tidak dipotong":
             "Diproses: "+json.optInt("charged",0)+" kredit digunakan";
           runOnUiThread(()->{
             if(creditLabel!=null)creditLabel.setText(json.optBoolean("unlimited",false)?"∞ UNLIMITED":
