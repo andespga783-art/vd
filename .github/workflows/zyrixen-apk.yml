@@ -15,7 +15,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m unittest discover -s zyrixen/backend -p 'test_*.py' -v
+      - run: python -m pip install -r zyrixen/backend/requirements.txt httpx\n      - run: python -m unittest discover -s zyrixen/backend -p 'test_*.py' -v
   build:
     runs-on: ubuntu-latest
     steps:
@@ -31,7 +31,7 @@ jobs:
       - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
       - run: gradle :deob:assembleDebug :owner:assembleDebug --no-daemon --stacktrace
         working-directory: zyrixen
-      - uses: actions/upload-artifact@v4
+      - name: Verify both installable APKs\n        run: |\n          set -euo pipefail\n          for module in deob owner; do\n            apk=\"zyrixen/$module/build/outputs/apk/debug/$module-debug.apk\"\n            test -s \"$apk\"\n            $ANDROID_HOME/build-tools/35.0.0/aapt dump badging \"$apk\" | head -n 3\n          done\n      - uses: actions/upload-artifact@v4
         with:
           name: Zyrixen-Android-APKs
           path: |
