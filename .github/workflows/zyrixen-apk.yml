@@ -51,6 +51,7 @@ jobs:
             apk="zyrixen/$module/build/outputs/apk/debug/$module-debug.apk"
             test -s "$apk"
             "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$apk" | sed -n '1,3p'
+            "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$apk"
           done
       - uses: actions/upload-artifact@v4
         with:
@@ -59,3 +60,38 @@ jobs:
             zyrixen/deob/build/outputs/apk/debug/*.apk
             zyrixen/owner/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+  android16-install-test:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Zyrixen-Android-APKs
+          path: downloaded-apks
+      - name: Enable KVM acceleration
+        run: |
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+      - name: Android 16 install and launch smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: |
+            set -e
+            find downloaded-apks -name '*.apk' -print
+            adb install -r downloaded-apks/deob-debug.apk
+            adb install -r downloaded-apks/owner-debug.apk
+            adb shell pm path com.zyrixen.deob
+            adb shell pm path com.zyrixen.owner
+            adb shell am start -n com.zyrixen.deob/.MainActivity
+            sleep 3
+            adb shell am start -n com.zyrixen.owner/.MainActivity
+            sleep 3
+            adb shell dumpsys activity activities | grep -E 'com.zyrixen.(deob|owner)' || true
