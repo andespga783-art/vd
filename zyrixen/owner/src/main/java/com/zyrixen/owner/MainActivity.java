@@ -29,6 +29,7 @@ public class MainActivity extends Activity {
   private EditText secret, notice, limit;
   private CheckBox enabled, maintenance;
   private Button login, save;
+  private OwnerUsersPanel usersPanel;
   private volatile boolean busy=false;
 
   void add(LinearLayout parent,View child,int bottom){parent.addView(child,ZyrixenUi.lp(this,bottom));}
@@ -50,7 +51,7 @@ public class MainActivity extends Activity {
 
     TextView brand=text("◈  Z Y R I X E N",16,ZyrixenUi.CYAN,true);add(root,brand,21);
     add(root,text("Owner Control",29,ZyrixenUi.WHITE,true),7);
-    add(root,text("CONTROL CENTER  •  VERSION 0.7",11,ZyrixenUi.MUTED,false),22);
+    add(root,text("CONTROL CENTER  •  VERSION 0.8",11,ZyrixenUi.MUTED,false),22);
 
     LinearLayout serverCard=ZyrixenUi.card(this);
     server=text(api.isEmpty()?"●  SERVER BELUM TERHUBUNG":"●  MENGHUBUNGKAN...",13,ZyrixenUi.MUTED,true);
@@ -101,6 +102,8 @@ public class MainActivity extends Activity {
     save.setOnClickListener(v->saveSettings());
     lastAction=text("Menunggu aktivitas Owner.",12,ZyrixenUi.MUTED,false);settings.addView(lastAction);
     add(admin,settings,14);
+    usersPanel=new OwnerUsersPanel(this);
+    add(admin,usersPanel.view(),15);
     Button reload=ZyrixenUi.button(this,"↻  Refresh Dashboard",false);add(admin,reload,10);
     reload.setOnClickListener(v->refresh());
     Button logout=ZyrixenUi.button(this,"Keluar dari Owner",false);add(admin,logout,17);
@@ -121,6 +124,7 @@ public class MainActivity extends Activity {
     }).start();
     resumeSession();
   }
+  boolean hasOwnerSession(){return !sessionToken.isEmpty();}
   JSONObject request(String path,String method,JSONObject payload,boolean owner)throws Exception{
     if(!api.startsWith("https://"))throw new Exception("Server Zyrixen belum tersedia");
     HttpURLConnection c=(HttpURLConnection)new URL(api+path).openConnection();
@@ -165,6 +169,7 @@ public class MainActivity extends Activity {
         JSONObject cfg=authenticatedRequest("/admin/config","GET",null);
         runOnUiThread(()->{
           render(stats,cfg);signIn.setVisibility(View.GONE);admin.setVisibility(View.VISIBLE);
+          usersPanel.load();
           server.setText("●  OWNER OTOMATIS TERHUBUNG");
           server.setTextColor(ZyrixenUi.CYAN);
           serverDesc.setText("Perangkat ini sudah teraktivasi.");
@@ -192,6 +197,7 @@ public class MainActivity extends Activity {
         JSONObject config=authenticatedRequest("/admin/config","GET",null);
         runOnUiThread(()->{
           render(stats,config);signIn.setVisibility(View.GONE);admin.setVisibility(View.VISIBLE);
+          usersPanel.load();
           server.setText("●  OWNER TERHUBUNG");server.setTextColor(ZyrixenUi.CYAN);
           serverDesc.setText("Selamat datang di Zyrixen Control Center.");
           secret.setText("");
@@ -214,7 +220,11 @@ public class MainActivity extends Activity {
       try{
         JSONObject stats=authenticatedRequest("/admin/stats","GET",null);
         JSONObject config=authenticatedRequest("/admin/config","GET",null);
-        runOnUiThread(()->{render(stats,config);lastAction.setText("Data terbaru berhasil dimuat.");});
+        runOnUiThread(()->{
+          render(stats,config);
+          lastAction.setText("Data terbaru berhasil dimuat.");
+          usersPanel.load();
+        });
       }catch(Exception e){toast("Refresh gagal: "+e.getMessage());}
       finally{busy=false;}
     }).start();
