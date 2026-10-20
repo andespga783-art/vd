@@ -61,6 +61,18 @@ jobs:
             zyrixen/owner/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
+      - name: Prepare named debug APK installers
+        run: |
+          set -euo pipefail
+          mkdir -p debug-apks
+          cp zyrixen/deob/build/outputs/apk/debug/deob-debug.apk debug-apks/Zyrixen_Deobfuscator_v0.9.apk
+          cp zyrixen/owner/build/outputs/apk/debug/owner-debug.apk debug-apks/Zyrixen_Owner_v0.9.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Zyrixen-v0.9-Debug-Installers
+          path: debug-apks/*.apk
+          if-no-files-found: error
+
       - name: Build permanently signed release APKs
         env:
           KEYSTORE_B64: ${{ secrets.ZYRIXEN_KEYSTORE_B64 }}
