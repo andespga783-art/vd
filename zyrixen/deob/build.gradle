@@ -6,9 +6,9 @@ android {
         applicationId 'com.zyrixen.deob'
         minSdk 26
         targetSdk 35
-        versionCode 3
-        versionName '0.3'
-        def endpoint = System.getenv('ZYRIXEN_BACKEND_URL') ?: ''
+        versionCode 4
+        versionName '0.4'
+        def endpoint = System.getenv('ZYRIXEN_BACKEND_URL') ?: 'https://hdlxgecizpuljvdoznyv.supabase.co/functions/v1/zyrixen-api'
         buildConfigField 'String', 'BACKEND_URL', "\""+endpoint+"\""
     }
     buildFeatures { buildConfig true }
