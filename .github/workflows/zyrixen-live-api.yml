@@ -41,5 +41,7 @@ jobs:
           set -euo pipefail
           status="$(curl -sS -o /tmp/owner-response -w '%{http_code}' --max-time 25 "$API/admin/stats")"
           test "$status" = 401
+          status="$(curl -sS -o /tmp/owner-pair-response -w '%{http_code}' --max-time 25 -X POST "$API/owner/activate" -H 'Content-Type: application/json' --data '{"code":"invalid"}')"
+          test "$status" = 401
           status="$(curl -sS -o /tmp/owner-refresh-response -w '%{http_code}' --max-time 25 -X POST "$API/owner/refresh" -H 'Content-Type: application/json' --data '{"refresh_token":"not-a-real-token"}')"
           test "$status" = 401
