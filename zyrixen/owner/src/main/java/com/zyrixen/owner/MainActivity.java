@@ -38,7 +38,15 @@ public class MainActivity extends Activity {
   @Override public void onCreate(Bundle state){
     super.onCreate(state);getWindow().setStatusBarColor(ZyrixenUi.BG);getWindow().setNavigationBarColor(ZyrixenUi.BG);
     ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.setBackgroundColor(ZyrixenUi.BG);
-    root=ZyrixenUi.vertical(this);ZyrixenUi.pad(root,this,20,24,20,30);scroll.addView(root);setContentView(scroll);
+    root=ZyrixenUi.vertical(this);ZyrixenUi.pad(root,this,20,24,20,30);
+    if(android.os.Build.VERSION.SDK_INT>=30){
+      root.setOnApplyWindowInsetsListener((v,insets)->{
+        android.graphics.Insets bars=insets.getInsets(android.view.WindowInsets.Type.systemBars());
+        v.setPadding(ZyrixenUi.dp(this,20),ZyrixenUi.dp(this,24)+bars.top,
+            ZyrixenUi.dp(this,20),ZyrixenUi.dp(this,30)+bars.bottom);
+        return insets;
+      });
+    }else{root.setFitsSystemWindows(true);}scroll.addView(root);setContentView(scroll);
 
     TextView brand=text("◈  Z Y R I X E N",16,ZyrixenUi.CYAN,true);add(root,brand,21);
     add(root,text("Owner Control",29,ZyrixenUi.WHITE,true),7);
