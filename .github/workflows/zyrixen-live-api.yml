@@ -1,0 +1,27 @@
+name: Test Zyrixen Online API
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/zyrixen-live-api.yml'
+permissions:
+  contents: read
+jobs:
+  api-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test public health and configuration
+        env:
+          API: https://hdlxgecizpuljvdoznyv.supabase.co/functions/v1/zyrixen-api
+        run: |
+          set -euo pipefail
+          curl --fail-with-body -sS --max-time 25 "$API/health" | python3 -c 'import json,sys; assert json.load(sys.stdin)["ok"] is True'
+          curl --fail-with-body -sS --max-time 25 "$API/config" | python3 -c 'import json,sys; a=json.load(sys.stdin); assert "enabled" in a and "maintenance" in a'
+          curl --fail-with-body -sS --max-time 25 -X POST "$API/deobfuscate" -H 'Content-Type: application/json' --data '{"source":"print(123)"}' | python3 -c 'import json,sys; assert json.load(sys.stdin)["result"] == "print(123)"'
+      - name: Check unauthorized admin requests are rejected
+        env:
+          API: https://hdlxgecizpuljvdoznyv.supabase.co/functions/v1/zyrixen-api
+        run: |
+          set -euo pipefail
+          status="$(curl -sS -o /tmp/owner-response -w '%{http_code}' --max-time 25 "$API/admin/stats")"
+          test "$status" = 401
