@@ -50,7 +50,7 @@ public class MainActivity extends Activity {
 
     TextView brand=text("◈  Z Y R I X E N",16,ZyrixenUi.CYAN,true);add(root,brand,21);
     add(root,text("Owner Control",29,ZyrixenUi.WHITE,true),7);
-    add(root,text("CONTROL CENTER  •  VERSION 0.6",11,ZyrixenUi.MUTED,false),22);
+    add(root,text("CONTROL CENTER  •  VERSION 0.7",11,ZyrixenUi.MUTED,false),22);
 
     LinearLayout serverCard=ZyrixenUi.card(this);
     server=text(api.isEmpty()?"●  SERVER BELUM TERHUBUNG":"●  MENGHUBUNGKAN...",13,ZyrixenUi.MUTED,true);
@@ -203,8 +203,8 @@ public class MainActivity extends Activity {
   void render(JSONObject stats,JSONObject config){
     jobs.setText(String.valueOf(stats.optInt("count",0)));
     characters.setText(String.valueOf(stats.optLong("total_chars",0)));
-    enabled.setChecked(config.optInt("enabled",1)!=0);
-    maintenance.setChecked(config.optInt("maintenance",0)!=0);
+    enabled.setChecked(config.optBoolean("enabled",true));
+    maintenance.setChecked(config.optBoolean("maintenance",false));
     notice.setText(config.optString("notice",""));
     limit.setText(String.valueOf(config.optInt("max_chars",3000000)));
   }
