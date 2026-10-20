@@ -17,7 +17,7 @@ jobs:
           set -euo pipefail
           curl --fail-with-body -sS --max-time 25 "$API/health" | python3 -c 'import json,sys; assert json.load(sys.stdin)["ok"] is True'
           curl --fail-with-body -sS --max-time 25 "$API/config" | python3 -c 'import json,sys; a=json.load(sys.stdin); assert "enabled" in a and "maintenance" in a'
-          curl --fail-with-body -sS --max-time 25 "$API/health" | python3 -c 'import json,sys; assert json.load(sys.stdin)["version"] == "0.9"'
+          curl --fail-with-body -sS --max-time 25 "$API/health" | python3 -c 'import json,sys; a=json.load(sys.stdin); assert a["version"] == "1.1"; assert a["moonveil_v5"]["mode"] == "exact_input_analysis_cache"; assert a["moonveil_v5"]["arbitrary_source_supported"] is False'
       - name: Check unauthorized admin requests are rejected
         env:
           API: https://hdlxgecizpuljvdoznyv.supabase.co/functions/v1/zyrixen-api

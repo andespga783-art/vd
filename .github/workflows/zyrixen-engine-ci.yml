@@ -1,4 +1,4 @@
-name: Verify Zyrixen Engine 1.0
+name: Verify Zyrixen Engine
 on:
   workflow_dispatch:
   push:
@@ -25,6 +25,10 @@ jobs:
           node-version: "24"
       - name: Run Lua decoding regression tests
         run: node zyrixen/backend/supabase/zyrixen-api/engine.test.mjs
+      - name: Verify trial matching and API credit boundaries
+        run: |
+          node zyrixen/backend/supabase/zyrixen-api/moonveil-trial.test.mjs
+          node zyrixen/backend/supabase/zyrixen-api/route.test.mjs
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x

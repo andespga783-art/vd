@@ -1,4 +1,5 @@
 import { decodeLua, aiAnalyze, type AiReport } from "./engine.ts";
+import { ENGINE_VERSION, MOONVEIL_TRIAL_CAPABILITY, lookupMoonveilTrial, moonveilCandidateSize } from "./moonveil-trial.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
@@ -81,8 +82,8 @@ Deno.serve(async req => {
   if (req.method === "OPTIONS") return new Response(null, {status:204,headers});
   const path = new URL(req.url).pathname.replace(/^.*\/zyrixen-api(?=\/|$)/,"") || "/";
   try {
-    if (req.method==="GET" && path==="/health") return json({ok:true,service:"Zyrixen Online",version:"1.0"});
-    if (req.method==="GET" && path==="/config") return json({...await config(),engine_version:"1.0",max_source_bytes:8000000,ai_available:Deno.env.get("ZYRIXEN_AI_ENABLED")==="true" && !!Deno.env.get("AI_GATEWAY_API_KEY") && !!Deno.env.get("ZYRIXEN_AI_MODEL")});
+    if (req.method==="GET" && path==="/health") return json({ok:true,service:"Zyrixen Online",version:ENGINE_VERSION,moonveil_v5:MOONVEIL_TRIAL_CAPABILITY});
+    if (req.method==="GET" && path==="/config") return json({...await config(),engine_version:ENGINE_VERSION,moonveil_v5:MOONVEIL_TRIAL_CAPABILITY,max_source_bytes:8000000,ai_available:Deno.env.get("ZYRIXEN_AI_ENABLED")==="true" && !!Deno.env.get("AI_GATEWAY_API_KEY") && !!Deno.env.get("ZYRIXEN_AI_MODEL")});
     if(req.method==="POST" && path==="/user/register"){
       const payload=await readBody(req,2048);
       const username=typeof payload.username==="string"?payload.username.trim():"";
@@ -116,12 +117,23 @@ Deno.serve(async req => {
       if (source.length>cfg.max_chars) return fail("Batas source terlalu besar",413);
       if(typeof requestId!=="string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(requestId))
         return fail("Request ID tidak valid",422);
+      const sourceDigest=await sha256(source);
+      const trial=moonveilCandidateSize(source)?lookupMoonveilTrial(sourceDigest):null;
+      if(trial){
+        // This is a read-only lookup, not a completed deobfuscation job. In particular,
+        // never submit it to the credit RPC or consume the user's AI quota.
+        return json({result:trial.result,transformations:0,engine_version:ENGINE_VERSION+"-PARTIAL",
+          stages:[{name:"moonveil_v5_exact_input_analysis_cache",changes:0}],
+          patterns:["moonveil"],warnings:[trial.note],analysis:{...trial,result:undefined},
+          result_status:trial.status,charged:0,replayed:false,credits:user.credits,unlimited:user.unlimited,
+          obfuscator:"moonveil",note:trial.note});
+      }
       const decoded=decodeLua(source);
       const {result,transformations,stages,patterns,warnings}=decoded;
       const {data:charged,error:chargeError}=await adminDb.rpc("zyrixen_complete_job",{
         p_user_id:user.id,p_request_id:requestId,
         p_source_chars:source.length,p_transformations:transformations,
-        p_source_digest:await sha256(source)
+        p_source_digest:sourceDigest
       });
       if(chargeError)throw chargeError;
       if(!charged || charged.ok!==true){
@@ -145,7 +157,7 @@ Deno.serve(async req => {
             :{status:"skipped",caution:"Batas AI tercapai: maksimal 2 analisis per jam per akun."};
         }
       }
-      return json({result,transformations,engine_version:"1.0",stages,patterns,warnings,ai,
+      return json({result,transformations,engine_version:ENGINE_VERSION,stages,patterns,warnings,ai,
         charged:charged.charged,replayed:charged.replayed===true,credits:charged.credits,unlimited:charged.unlimited,
         obfuscator:patterns[0]??undefined,
         note:charged.replayed===true?"Permintaan ulang: tidak ada kredit tambahan yang dipotong.":transformations===0?"Tidak ada transformasi: kredit tidak dipotong. Mesin belum mendukung obfuscation ini.":charged.charged===0?"Berhasil diproses dengan unlimited kredit.":"Sukses diproses. Satu kredit digunakan."});
