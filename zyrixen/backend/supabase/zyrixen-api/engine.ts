@@ -79,7 +79,7 @@ function escapedLiteralPass(source:string,onlyStrings=false):{result:string;chan
 function shadowedString(ts:Token[]):boolean{
  for(let i=0;i<ts.length;i++)if(ts[i].text==="string"){
   if(ts[i-1]?.text==="local"||ts[i-1]?.text==="function"||ts[i+1]?.text==="=")return true;
-  if(ts[i+1]?.text==="."&&ts[i+2]?.text==="char"&&ts[i+3]?.text==="=")return true;
+  if(ts[i+1]?.text==="."&&["char","reverse"].includes(ts[i+2]?.text)&&ts[i+3]?.text==="=")return true;
  }
  return false;
 }
