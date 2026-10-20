@@ -106,6 +106,54 @@ function stringCharPass(source:string):{result:string;changes:number}{
  }
  return{result:applyEdits(source,edits),changes:edits.length};
 }
+function stringReversePass(source:string):{result:string;changes:number}{
+ const t=lex(source);if(!t||shadowedString(t))return{result:source,changes:0};
+ const edits:Edit[]=[];
+ for(let i=0;i+5<t.length;i++){
+  if(t[i].text!=="string"||t[i-1]?.text==="."||t[i+1]?.text!=="."||t[i+2]?.text!=="reverse"||t[i+3]?.text!=="(")continue;
+  const value=plainLiteral(t[i+4]);
+  if(value===null||!t[i+5]||t[i+5].text!==")"||!/^[-\x20-\x7e]*$/.test(value))continue;
+  if(source.slice(t[i].start,t[i+5].end).includes("--"))continue;
+  const replacement='"'+value.split("").reverse().join("").replace(/"/g,'\\"')+'"';
+  edits.push({start:t[i].start,end:t[i+5].end,replacement});
+  i+=5;
+ }
+ return{result:applyEdits(source,edits),changes:edits.length};
+}
+function tableConcatPass(source:string):{result:string;changes:number}{
+ const t=lex(source);if(!t)return{result:source,changes:0};
+ if(t.some((v,i)=>v.text==="table"&&(t[i-1]?.text==="local"||t[i+1]?.text==="="||
+   (t[i+1]?.text==="."&&t[i+2]?.text==="concat"&&t[i+3]?.text==="="))))return{result:source,changes:0};
+ const edits:Edit[]=[];
+ for(let i=0;i+6<t.length;i++){
+  if(t[i].text!=="table"||t[i-1]?.text==="."||t[i+1]?.text!=="."||t[i+2]?.text!=="concat"||t[i+3]?.text!=="("||t[i+4]?.text!=="{")continue;
+  let k=i+5;const parts:string[]=[];let expectMember=true,valid=true;
+  while(k<t.length&&k<i+265){
+   if(t[k].text==="}"&&!expectMember)break;
+   if(expectMember){
+    const value=plainLiteral(t[k]);
+    if(value===null){valid=false;break;}
+    parts.push(value);expectMember=false;
+   }else if(t[k].text!==","){valid=false;break;}
+   else expectMember=true;
+   k++;
+  }
+  if(!valid||parts.length===0||t[k]?.text!=="}")continue;
+  let sep="",end=k+1;
+  if(t[end]?.text===","){
+   const value=plainLiteral(t[end+1]);
+   if(value===null)continue;
+   sep=value;end+=2;
+  }
+  if(t[end]?.text!==")")continue;
+  if(source.slice(t[i].start,t[end].end).includes("--"))continue;
+  const result=parts.join(sep).replace(/"/g,'\\"');
+  edits.push({start:t[i].start,end:t[end].end,replacement:'"'+result+'"'});
+  i=end;
+ }
+ return{result:applyEdits(source,edits),changes:edits.length};
+}
+
 function plainLiteral(t:Token|undefined):string|null{
  if(!t||t.kind!=="string"||t.text.length<2)return null;
  const q=t.text[0];if((q!=='"'&&q!=="'")||t.text[t.text.length-1]!==q)return null;
@@ -154,6 +202,8 @@ export function decodeLua(source:string):EngineResult{
  for(const [name,run] of [
   ["escaped_strings",escapedLiteralPass],
   ["string_char",stringCharPass],
+  ["string_reverse",stringReversePass],
+  ["table_concat",tableConcatPass],
   ["literal_concat",literalJoinPass]
  ] as const){
   const r=run(result);if(r.changes){stages.push({name,changes:r.changes});result=r.result;}
