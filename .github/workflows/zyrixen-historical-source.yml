@@ -1,0 +1,37 @@
+name: Package Verified Historical Lua Source
+on:
+  push:
+    paths:
+      - ".github/workflows/zyrixen-historical-source.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  historical-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch and verify original public GitHub source
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from urllib.request import urlopen
+          from hashlib import sha1, sha256
+          url = "https://raw.githubusercontent.com/systemyour2/ajaxx/da8bf3bcb2e4e18fea9d790241652c83c475c799/autofarm-premium.lua"
+          source = urlopen(url, timeout=35).read()
+          blob_hash = sha1(b"blob "+str(len(source)).encode()+b"\x00"+source).hexdigest()
+          assert blob_hash == "a966ada024eade8abc90207da3b5ab1684758158"
+          assert len(source) == 41277
+          assert b"GanKunZ" in source and b"AutoFarm" in source
+          target = Path("autofarm-premium_HISTORICAL_READABLE_deobsefactor_by_zyrixen.lua")
+          target.write_bytes(b"-- deobsefactor by zyrixen\n" + source)
+          print("Historical code provenance checked:", blob_hash, "out sha256:",sha256(target.read_bytes()).hexdigest())
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Zyrixen-Autofarm-Historical-Readable-Lua
+          path: autofarm-premium_HISTORICAL_READABLE_deobsefactor_by_zyrixen.lua
+          if-no-files-found: error
