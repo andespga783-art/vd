@@ -58,6 +58,10 @@ public final class OwnerUsersPanel {
 
   private void attach(View child,int margin){wrapper.addView(child,ZyrixenUi.lp(activity,margin));}
   public View view(){return wrapper;}
+  public boolean canAutoRefresh(){
+    View focused=activity.getCurrentFocus();
+    return search.getText().length()==0 && !(focused instanceof EditText);
+  }
   private void alert(String message){
     activity.runOnUiThread(()->Toast.makeText(activity,message,Toast.LENGTH_LONG).show());
   }
@@ -71,7 +75,10 @@ public final class OwnerUsersPanel {
         String query=URLEncoder.encode(keyword, "UTF-8");
         JSONObject data=activity.authenticatedRequest("/admin/users?page="+requestedPage+"&q="+query,"GET",null);
         activity.runOnUiThread(()->render(data));
-      }catch(Exception e){alert("Gagal memuat pengguna: "+e.getMessage());}
+      }catch(Exception e){
+        alert("Gagal memuat pengguna: "+e.getMessage());
+        activity.runOnUiThread(()->status.setText("Tidak bisa memuat pengguna. Ketuk Cari / Segarkan."));
+      }
       finally{updating.set(false);}
     }).start();
   }
