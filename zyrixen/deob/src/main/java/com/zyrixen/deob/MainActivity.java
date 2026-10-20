@@ -19,6 +19,9 @@ import android.widget.Toast;
 import android.text.TextWatcher;
 import android.text.Editable;
 import android.text.InputFilter;
+import android.os.Handler;
+import android.os.Looper;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -40,6 +43,18 @@ public class MainActivity extends Activity {
   private boolean bufferedPaste=false, suppressEdit=false;
   private static final int MAX_BYTES=8000000, PREVIEW=12000, CLIPBOARD_SAFE=250000;
   private volatile boolean running=false;
+  private volatile boolean foreground=false;
+  private volatile boolean serverAllowed=false;
+  private final AtomicBoolean statusChecking=new AtomicBoolean(false);
+  private final Handler statusHandler=new Handler(Looper.getMainLooper());
+  private final Runnable statusTicker=new Runnable(){
+    @Override public void run(){
+      if(foreground){
+        checkStatus();
+        statusHandler.postDelayed(this,10000);
+      }
+    }
+  };
 
   void notifyUser(String t){runOnUiThread(()->Toast.makeText(this,t,Toast.LENGTH_LONG).show());}
   void put(LinearLayout l,View v,int bottom){l.addView(v,ZyrixenUi.lp(this,bottom));}
@@ -76,7 +91,7 @@ public class MainActivity extends Activity {
     TextView brand=label("◈  Z Y R I X E N",16,ZyrixenUi.CYAN,true);put(root,brand,21);
     TextView hero=label("Deobfuscate.\nUnderstand. Build.",29,ZyrixenUi.WHITE,true);
     hero.setLineSpacing(ZyrixenUi.dp(this,4),1);put(root,hero,8);
-    put(root,label("LUA ANALYSIS STUDIO  •  VERSION 0.6",11,ZyrixenUi.MUTED,false),20);
+    put(root,label("LUA ANALYSIS STUDIO  •  VERSION 0.7",11,ZyrixenUi.MUTED,false),20);
 
     LinearLayout online=ZyrixenUi.card(this);
     service=label(api.isEmpty()?"●  MODE OFFLINE":"●  MENYAMBUNG KE SERVER",13,api.isEmpty()?ZyrixenUi.CYAN:ZyrixenUi.MUTED,true);
@@ -143,7 +158,18 @@ public class MainActivity extends Activity {
     TextView footer=label("ZYRIXEN  •  ANALYZE AUTHORIZED LUA ONLY",11,ZyrixenUi.MUTED,true);
     footer.setGravity(Gravity.CENTER);root.addView(footer);
     modeSelect(0);
-    checkStatus();
+    // Initial sync is handled by onResume and repeated while visible.
+  }
+  @Override protected void onResume(){
+    super.onResume();
+    foreground=true;
+    statusHandler.removeCallbacks(statusTicker);
+    statusTicker.run();
+  }
+  @Override protected void onPause(){
+    foreground=false;
+    statusHandler.removeCallbacks(statusTicker);
+    super.onPause();
   }
 
   private void chooseFile(){
@@ -225,20 +251,50 @@ public class MainActivity extends Activity {
       }
     }finally{c.disconnect();}
   }
+  private boolean isAllowed(JSONObject config){
+    return !config.optBoolean("maintenance",false) && config.optBoolean("enabled",true);
+  }
+  private void setServiceState(JSONObject config) {
+    boolean maintenance=config.optBoolean("maintenance",false);
+    boolean enabled=config.optBoolean("enabled",true);
+    serverAllowed=!maintenance&&enabled;
+    String announcement=config.optString("notice","");
+    if(maintenance){
+      service.setText("●  MODE MAINTENANCE");
+      service.setTextColor(ZyrixenUi.RED);
+      serviceDetail.setText(announcement.isEmpty()?"Owner sedang melakukan pemeliharaan.":announcement);
+    }else if(!enabled){
+      service.setText("●  DEOBFUSCATOR DINONAKTIFKAN");
+      service.setTextColor(ZyrixenUi.RED);
+      serviceDetail.setText(announcement.isEmpty()?"Fitur sedang dinonaktifkan Owner.":announcement);
+    }else{
+      service.setText("●  DEOBFUSCATOR AKTIF");
+      service.setTextColor(ZyrixenUi.CYAN);
+      serviceDetail.setText(announcement.isEmpty()?"ZYRIXEN Online siap dipakai.":announcement);
+    }
+    if(!running){
+      run.setEnabled(serverAllowed);
+      run.setText(serverAllowed?"✦   PROSES DEOBFUSCATE":"⏸  LAYANAN NONAKTIF");
+    }
+  }
   void checkStatus(){
     if(api.isEmpty())return;
+    if(!statusChecking.compareAndSet(false,true))return;
     new Thread(()->{
-      try{
+      try {
         JSONObject config=request("/config","GET",null);
-        boolean available=config.optInt("maintenance",0)==0&&config.optInt("enabled",1)==1;
-        runOnUiThread(()->{
-          service.setText(available?"●  SERVER ONLINE":"●  MAINTENANCE");
-          service.setTextColor(available?ZyrixenUi.CYAN:ZyrixenUi.RED);
-          serviceDetail.setText(config.optString("notice",available?"Mesin Zyrixen siap.":"Layanan ditangguhkan."));
-        });
+        runOnUiThread(()->{if(foreground)setServiceState(config);});
       }catch(Exception e){
-        runOnUiThread(()->{service.setText("●  KONEKSI TERPUTUS");service.setTextColor(ZyrixenUi.RED);
-          serviceDetail.setText("Mode offline tersedia untuk decode dasar.");});
+        serverAllowed=false;
+        runOnUiThread(()->{
+          if(!foreground)return;
+          service.setText("●  KONEKSI SERVER TERPUTUS");
+          service.setTextColor(ZyrixenUi.RED);
+          serviceDetail.setText("Aplikasi tidak akan melewati kontrol Owner saat offline.");
+          if(!running){run.setEnabled(false);run.setText("⏸  MENUNGGU SERVER");}
+        });
+      }finally{
+        statusChecking.set(false);
       }
     }).start();
   }
@@ -266,6 +322,11 @@ public class MainActivity extends Activity {
   }
   void process(){
     if(running)return;
+    if(!api.isEmpty()&&!serverAllowed){
+      checkStatus();
+      notifyUser("Layanan belum aktif. Ikuti pengaturan Zyrixen Owner.");
+      return;
+    }
     final int selectedMode=mode;
     final String text=(selectedMode==2||selectedMode==0&&bufferedPaste)?sourceBuffer:input.getText().toString();
     if(text.trim().isEmpty()){notifyUser("Masukkan source atau URL dahulu");return;}
@@ -273,6 +334,13 @@ public class MainActivity extends Activity {
     new Thread(()->{
       try{
         String source=text;
+        if(!api.isEmpty()){
+          JSONObject settings=request("/config","GET",null);
+          if(!isAllowed(settings)){
+            runOnUiThread(()->setServiceState(settings));
+            throw new Exception("Layanan dinonaktifkan melalui Zyrixen Owner. "+settings.optString("notice",""));
+          }
+        }
         if(selectedMode==1){
           if(!source.startsWith("https://"))throw new Exception("URL harus HTTPS");
           HttpURLConnection c=(HttpURLConnection)new URL(source).openConnection();
@@ -286,15 +354,7 @@ public class MainActivity extends Activity {
         if(api.isEmpty()){
           result=localDecode(source);info="Decoded lokal • belum menjamin semua obfuscation terbuka";
         }else{
-          JSONObject json;
-          try{json=request("/deobfuscate","POST",new JSONObject().put("source",source));}
-          catch(Exception e){
-            if(!e.getMessage().contains("413"))throw e;
-            result=localDecode(source);
-            info="Source terlalu besar untuk server; decoder ringan offline digunakan. Full source tetap tersimpan.";
-            runOnUiThread(()->{fullResult=result;output.setText(preview(result));resultInfo.setText(info);});
-            return;
-          }
+          JSONObject json=request("/deobfuscate","POST",new JSONObject().put("source",source));
           result=json.optString("result",source);
           int changes=json.optInt("transformations",0);
           info=changes==0?"Belum ada lapisan obfuscation yang berhasil dibuka pada percobaan ini.":"Zyrixen Engine "+json.optString("engine_version","")+" • "+changes+" transformasi";
@@ -304,8 +364,15 @@ public class MainActivity extends Activity {
           output.setText(preview(result));
           resultInfo.setText(info+" • output "+result.length()+" karakter");
         });
-      }catch(Exception e){notifyUser(e.getMessage());}
-      finally{running=false;runOnUiThread(()->{run.setEnabled(true);run.setText("✦   PROSES DEOBFUSCATE");});}
+      }catch(Exception e){notifyUser(e.getMessage());checkStatus();}
+      finally{
+        running=false;
+        runOnUiThread(()->{
+          boolean allowed=api.isEmpty()||serverAllowed;
+          run.setEnabled(allowed);
+          run.setText(allowed?"✦   PROSES DEOBFUSCATE":"⏸  LAYANAN NONAKTIF");
+        });
+      }
     }).start();
   }
 }
