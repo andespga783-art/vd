@@ -1,30 +1,232 @@
 package com.zyrixen.deob;
-import android.app.*; import android.os.*; import android.content.*; import android.widget.*;
-import org.json.*; import java.net.*; import java.io.*;
+
+import android.app.Activity;
+import android.content.Intent;
+import android.os.Bundle;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.net.Uri;
+import android.view.View;
+import android.view.Gravity;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.TextView;
+import android.widget.Toast;
+import org.json.JSONObject;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+
 public class MainActivity extends Activity {
- LinearLayout layout; EditText url,input,output; TextView info;
- EditText field(String hint,int lines){ EditText e=new EditText(this);e.setHint(hint);e.setMinLines(lines);layout.addView(e);return e; }
- void button(String title,Runnable r){Button b=new Button(this);b.setText(title);layout.addView(b);b.setOnClickListener(v->r.run());}
- void toast(String s){runOnUiThread(()->Toast.makeText(this,s,Toast.LENGTH_LONG).show());}
- JSONObject req(String path,String method,JSONObject data)throws Exception{
-  String base=url.getText().toString().trim().replaceAll("/+$","");
-  if(!base.startsWith("https://"))throw new Exception("Gunakan server HTTPS");
-  HttpURLConnection c=(HttpURLConnection)new URL(base+path).openConnection();
-  try{c.setRequestMethod(method);c.setConnectTimeout(12000);c.setReadTimeout(20000);
-  if(data!=null){c.setDoOutput(true);c.setRequestProperty("Content-Type","application/json");try(OutputStream o=c.getOutputStream()){o.write(data.toString().getBytes("UTF-8"));}}
-  int code=c.getResponseCode();InputStream stream=code<400?c.getInputStream():c.getErrorStream();
-  ByteArrayOutputStream b=new ByteArrayOutputStream();byte[] buf=new byte[4096];int n;while((n=stream.read(buf))!=-1)b.write(buf,0,n);
-  String content=b.toString("UTF-8");if(code>=400)throw new Exception("HTTP "+code+" "+content);return new JSONObject(content);
-  }finally{c.disconnect();}
- }
- interface Task { void run() throws Exception; }
- void async(Task r){new Thread(()->{try{r.run();}catch(Exception e){toast(e.getMessage());}}).start();}
- public void onCreate(Bundle b){super.onCreate(b); ScrollView sc=new ScrollView(this);layout=new LinearLayout(this);layout.setPadding(24,24,24,24);layout.setOrientation(1);sc.addView(layout);setContentView(sc);
- TextView title=new TextView(this);title.setText("ZYRIXEN DEOBFUSCATOR");title.setTextSize(23);layout.addView(title);
- url=field("URL backend HTTPS",1); info=new TextView(this);info.setText("Hubungkan backend Zyrixen");layout.addView(info);
- button("Cek status",()->async(()->{JSONObject j=req("/config","GET",null);runOnUiThread(()->info.setText(j.toString()));}));
- input=field("Tempel source Lua",10);output=field("Hasil deobfuscasi",10);
- button("DEOBFUSCATE",()->async(()->{JSONObject j=req("/deobfuscate","POST",new JSONObject().put("source",input.getText().toString()));runOnUiThread(()->output.setText(j.optString("result","")));}));
- button("Salin hasil",()->{((android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("Zyrixen",output.getText()));toast("Disalin");});
- }
+  private static final int OPEN_LUA=101, SAVE_LUA=102;
+  private final String api=BuildConfig.BACKEND_URL.trim().replaceAll("/+$","");
+  private EditText input, output;
+  private TextView service, serviceDetail, resultInfo, modeLabel;
+  private Button pasteTab, linkTab, fileTab, run;
+  private int mode=0;
+  private String savedResult="";
+  private volatile boolean running=false;
+
+  void notifyUser(String t){runOnUiThread(()->Toast.makeText(this,t,Toast.LENGTH_LONG).show());}
+  void put(LinearLayout l,View v,int bottom){l.addView(v,ZyrixenUi.lp(this,bottom));}
+  TextView label(String s,int size,int color,boolean bold){return ZyrixenUi.text(this,s,size,color,bold);}
+  void modeSelect(int newMode){
+    mode=newMode;
+    pasteTab.setTextColor(newMode==0?ZyrixenUi.WHITE:ZyrixenUi.MUTED);
+    linkTab.setTextColor(newMode==1?ZyrixenUi.WHITE:ZyrixenUi.MUTED);
+    fileTab.setTextColor(newMode==2?ZyrixenUi.WHITE:ZyrixenUi.MUTED);
+    pasteTab.setBackground(ZyrixenUi.shape(newMode==0?ZyrixenUi.ACCENT:ZyrixenUi.RAISED,13,this));
+    linkTab.setBackground(ZyrixenUi.shape(newMode==1?ZyrixenUi.ACCENT:ZyrixenUi.RAISED,13,this));
+    fileTab.setBackground(ZyrixenUi.shape(newMode==2?ZyrixenUi.ACCENT:ZyrixenUi.RAISED,13,this));
+    input.setVisibility(newMode==2?View.GONE:View.VISIBLE);
+    modeLabel.setText(newMode==0?"SOURCE LUA":newMode==1?"RAW HTTPS URL":"FILE LUA");
+    if(newMode==0) input.setHint("Tempel kode Lua di sini...\n\nlocal example = \"\\\\72\\\\101...\"");
+    if(newMode==1) input.setHint("https://raw.githubusercontent.com/.../script.lua");
+    if(newMode==2) chooseFile();
+  }
+  @Override public void onCreate(Bundle state){
+    super.onCreate(state);
+    getWindow().setStatusBarColor(ZyrixenUi.BG);getWindow().setNavigationBarColor(ZyrixenUi.BG);
+    getWindow().getDecorView().setSystemUiVisibility(0);
+    ScrollView sc=new ScrollView(this);sc.setFillViewport(true);sc.setBackgroundColor(ZyrixenUi.BG);
+    LinearLayout root=ZyrixenUi.vertical(this);ZyrixenUi.pad(root,this,20,24,20,30);sc.addView(root);setContentView(sc);
+
+    TextView brand=label("◈  Z Y R I X E N",16,ZyrixenUi.CYAN,true);put(root,brand,21);
+    TextView hero=label("Deobfuscate.\nUnderstand. Build.",29,ZyrixenUi.WHITE,true);
+    hero.setLineSpacing(ZyrixenUi.dp(this,4),1);put(root,hero,8);
+    put(root,label("LUA ANALYSIS STUDIO  •  VERSION 0.3",11,ZyrixenUi.MUTED,false),20);
+
+    LinearLayout online=ZyrixenUi.card(this);
+    service=label(api.isEmpty()?"●  MODE OFFLINE":"●  MENYAMBUNG KE SERVER",13,api.isEmpty()?ZyrixenUi.CYAN:ZyrixenUi.MUTED,true);
+    put(online,service,5);
+    serviceDetail=label(api.isEmpty()?"Decoder ringan dapat dipakai tanpa server.":"Status layanan dicek otomatis saat aplikasi dibuka.",12,ZyrixenUi.MUTED,false);
+    online.addView(serviceDetail);put(root,online,22);
+
+    put(root,label("WORKSPACE",12,ZyrixenUi.MUTED,true),10);
+    LinearLayout selector=ZyrixenUi.row(this);
+    selector.setBackground(ZyrixenUi.shape(ZyrixenUi.RAISED,16,this));ZyrixenUi.pad(selector,this,5,5,0,5);
+    pasteTab=ZyrixenUi.button(this,"⌘ Paste",false);
+    linkTab=ZyrixenUi.button(this,"↗ URL",false);
+    fileTab=ZyrixenUi.button(this,"▤ File",false);
+    selector.addView(pasteTab,ZyrixenUi.weighted(this,5));selector.addView(linkTab,ZyrixenUi.weighted(this,5));selector.addView(fileTab,ZyrixenUi.weighted(this,5));
+    put(root,selector,18);
+    pasteTab.setOnClickListener(v->modeSelect(0));linkTab.setOnClickListener(v->modeSelect(1));fileTab.setOnClickListener(v->modeSelect(2));
+
+    modeLabel=label("SOURCE LUA",11,ZyrixenUi.MUTED,true);put(root,modeLabel,9);
+    input=ZyrixenUi.edit(this,"Tempel kode Lua di sini...",9);
+    input.setTypeface(Typeface.MONOSPACE);put(root,input,16);
+
+    run=ZyrixenUi.button(this,"✦   PROSES DEOBFUSCATE",true);put(root,run,22);
+    run.setOnClickListener(v->process());
+
+    LinearLayout resultCard=ZyrixenUi.card(this);
+    LinearLayout head=ZyrixenUi.row(this);
+    head.addView(label("HASIL ANALISIS",14,ZyrixenUi.WHITE,true),new LinearLayout.LayoutParams(0,-2,1));
+    TextView tag=label("LUA",11,ZyrixenUi.CYAN,true);head.addView(tag);put(resultCard,head,10);
+    resultInfo=label("Belum ada hasil. Proses kode Lua untuk memulai.",12,ZyrixenUi.MUTED,false);put(resultCard,resultInfo,12);
+    output=ZyrixenUi.edit(this,"Hasil kode yang sudah diproses muncul di sini...",8);
+    output.setTypeface(Typeface.MONOSPACE);put(resultCard,output,13);
+    LinearLayout buttons=ZyrixenUi.row(this);
+    Button copy=ZyrixenUi.button(this,"⧉  Copy All",false);
+    Button save=ZyrixenUi.button(this,"⇩  Download",false);
+    buttons.addView(copy,ZyrixenUi.weighted(this,7));buttons.addView(save,ZyrixenUi.weighted(this,0));resultCard.addView(buttons);
+    copy.setOnClickListener(v->{
+      String text=output.getText().toString();
+      if(text.isEmpty()){notifyUser("Belum ada hasil");return;}
+      ((ClipboardManager)getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("Zyrixen Lua",text));
+      notifyUser("Hasil tersalin");
+    });
+    save.setOnClickListener(v->{
+      savedResult=output.getText().toString();
+      if(savedResult.isEmpty()){notifyUser("Belum ada hasil");return;}
+      Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);
+      i.setType("text/plain");i.putExtra(Intent.EXTRA_TITLE,"zyrixen_deobsefactor.lua");startActivityForResult(i,SAVE_LUA);
+    });
+    put(root,resultCard,23);
+    TextView footer=label("ZYRIXEN  •  ANALYZE AUTHORIZED LUA ONLY",11,ZyrixenUi.MUTED,true);
+    footer.setGravity(Gravity.CENTER);root.addView(footer);
+    modeSelect(0);
+    checkStatus();
+  }
+
+  private void chooseFile(){
+    Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);
+    i.setType("*/*");startActivityForResult(i,OPEN_LUA);
+  }
+  @Override protected void onActivityResult(int request,int result,Intent data){
+    super.onActivityResult(request,result,data);
+    if(result!=RESULT_OK||data==null||data.getData()==null)return;
+    Uri uri=data.getData();
+    if(request==OPEN_LUA){
+      new Thread(()->{
+        try(InputStream in=getContentResolver().openInputStream(uri)){
+          String code=readLimited(in,600000);
+          runOnUiThread(()->{mode=0;modeSelect(0);input.setText(code);notifyUser("File dimuat");});
+        }catch(Exception e){notifyUser("Gagal membaca file: "+e.getMessage());}
+      }).start();
+    }
+    if(request==SAVE_LUA){
+      try(OutputStream out=getContentResolver().openOutputStream(uri)){
+        if(out==null)throw new Exception("Tidak bisa menulis file");
+        out.write(savedResult.getBytes(StandardCharsets.UTF_8));notifyUser("File Lua disimpan");
+      }catch(Exception e){notifyUser("Gagal menyimpan: "+e.getMessage());}
+    }
+  }
+  static String readLimited(InputStream in,int max)throws Exception {
+    ByteArrayOutputStream bytes=new ByteArrayOutputStream();byte[] buf=new byte[4096];int n;
+    while((n=in.read(buf))!=-1){if(bytes.size()+n>max)throw new Exception("Batas file "+max+" byte");bytes.write(buf,0,n);}
+    return bytes.toString("UTF-8");
+  }
+  JSONObject request(String path,String method,JSONObject payload)throws Exception{
+    if(!api.startsWith("https://"))throw new Exception("Server Zyrixen belum dikonfigurasi");
+    HttpURLConnection c=(HttpURLConnection)new URL(api+path).openConnection();
+    try{
+      c.setConnectTimeout(9000);c.setReadTimeout(20000);c.setRequestMethod(method);
+      if(payload!=null){
+        c.setDoOutput(true);c.setRequestProperty("Content-Type","application/json; charset=utf-8");
+        try(OutputStream out=c.getOutputStream()){out.write(payload.toString().getBytes(StandardCharsets.UTF_8));}
+      }
+      int code=c.getResponseCode();
+      try(InputStream in=code<400?c.getInputStream():c.getErrorStream()){
+        String text=readLimited(in,900000);
+        if(code>=400)throw new Exception("Server "+code+": "+text);
+        return new JSONObject(text);
+      }
+    }finally{c.disconnect();}
+  }
+  void checkStatus(){
+    if(api.isEmpty())return;
+    new Thread(()->{
+      try{
+        JSONObject config=request("/config","GET",null);
+        boolean available=config.optInt("maintenance",0)==0&&config.optInt("enabled",1)==1;
+        runOnUiThread(()->{
+          service.setText(available?"●  SERVER ONLINE":"●  MAINTENANCE");
+          service.setTextColor(available?ZyrixenUi.CYAN:ZyrixenUi.RED);
+          serviceDetail.setText(config.optString("notice",available?"Mesin Zyrixen siap.":"Layanan ditangguhkan."));
+        });
+      }catch(Exception e){
+        runOnUiThread(()->{service.setText("●  KONEKSI TERPUTUS");service.setTextColor(ZyrixenUi.RED);
+          serviceDetail.setText("Mode offline tersedia untuk decode dasar.");});
+      }
+    }).start();
+  }
+  String localDecode(String source){
+    StringBuilder out=new StringBuilder();char quote=0;
+    for(int i=0;i<source.length();i++){
+      char c=source.charAt(i);
+      if(quote==0){out.append(c);if(c=='"'||c=='\'')quote=c;continue;}
+      if(c==quote){out.append(c);quote=0;continue;}
+      if(c!='\\'){out.append(c);continue;}
+      if(i+1>=source.length()){out.append(c);continue;}
+      int j=i+1,value=-1;
+      if(source.charAt(j)=='x'&&j+2<source.length()){
+        try{value=Integer.parseInt(source.substring(j+1,j+3),16);j+=3;}
+        catch(NumberFormatException ignored){}
+      } else if(Character.isDigit(source.charAt(j))){
+        int start=j;while(j<source.length()&&j<start+3&&source.charAt(j)>='0'&&source.charAt(j)<='9')j++;
+        try{value=Integer.parseInt(source.substring(start,j));}catch(NumberFormatException ignored){}
+      }
+      if(value>=32&&value<=126&&value!='\\'&&value!=quote){
+        out.append((char)value);i=j-1;
+      }else{out.append(c);out.append(source.charAt(++i));}
+    }
+    return out.toString();
+  }
+  void process(){
+    if(running)return;
+    final String text=input.getText().toString().trim();final int selectedMode=mode;
+    if(selectedMode!=2&&text.isEmpty()){notifyUser("Masukkan source atau URL dahulu");return;}
+    running=true;run.setText("◌  MEMPROSES...");run.setEnabled(false);
+    new Thread(()->{
+      try{
+        String source=text;
+        if(selectedMode==1){
+          if(!source.startsWith("https://"))throw new Exception("URL harus HTTPS");
+          HttpURLConnection c=(HttpURLConnection)new URL(source).openConnection();
+          c.setConnectTimeout(10000);c.setReadTimeout(15000);c.setInstanceFollowRedirects(false);
+          try{if(c.getResponseCode()!=200)throw new Exception("Raw URL tidak tersedia");
+            try(InputStream in=c.getInputStream()){source=readLimited(in,600000);}
+          }finally{c.disconnect();}
+        }
+        if(source.isEmpty())throw new Exception("Source masih kosong");
+        final String result;final String info;
+        if(api.isEmpty()){
+          result=localDecode(source);info="Decoded lokal • belum menjamin semua obfuscation terbuka";
+        }else{
+          JSONObject json=request("/deobfuscate","POST",new JSONObject().put("source",source));
+          result=json.optString("result",source);info="Server Zyrixen • "+json.optInt("transformations",0)+" transformasi";
+        }
+        runOnUiThread(()->{output.setText(result);resultInfo.setText(info);});
+      }catch(Exception e){notifyUser(e.getMessage());}
+      finally{running=false;runOnUiThread(()->{run.setEnabled(true);run.setText("✦   PROSES DEOBFUSCATE");});}
+    }).start();
+  }
 }
