@@ -1,0 +1,1 @@
+Run with `ZYRIXEN_ADMIN_TOKEN=<secret> uvicorn main:app --host 0.0.0.0 --port 8000` in this directory. Use a trusted persistent backend host with HTTPS and persistent disk. Never commit the owner token. The Android apps need the public HTTPS backend URL, and this backend is not deployed by the GitHub APK build.
