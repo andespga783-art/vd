@@ -17,7 +17,8 @@ public class MainActivity extends Activity {
   String content=b.toString("UTF-8");if(code>=400)throw new Exception("HTTP "+code+" "+content);return new JSONObject(content);
   }finally{c.disconnect();}
  }
- void async(Runnable r){new Thread(()->{try{r.run();}catch(Exception e){toast(e.getMessage());}}).start();}
+ interface Task { void run() throws Exception; }
+ void async(Task r){new Thread(()->{try{r.run();}catch(Exception e){toast(e.getMessage());}}).start();}
  public void onCreate(Bundle b){super.onCreate(b); ScrollView sc=new ScrollView(this);layout=new LinearLayout(this);layout.setPadding(24,24,24,24);layout.setOrientation(1);sc.addView(layout);setContentView(sc);
  TextView title=new TextView(this);title.setText("ZYRIXEN DEOBFUSCATOR");title.setTextSize(23);layout.addView(title);
  url=field("URL backend HTTPS",1); info=new TextView(this);info.setText("Hubungkan backend Zyrixen");layout.addView(info);
