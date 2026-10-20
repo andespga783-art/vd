@@ -26,7 +26,7 @@ public class MainActivity extends Activity {
   private volatile String sessionToken="";
   private LinearLayout root, signIn, admin;
   private TextView server, serverDesc, jobs, characters, lastAction;
-  private EditText ownerEmail, secret, notice, limit;
+  private EditText secret, notice, limit;
   private CheckBox enabled, maintenance;
   private Button login, save;
   private volatile boolean busy=false;
@@ -50,7 +50,7 @@ public class MainActivity extends Activity {
 
     TextView brand=text("◈  Z Y R I X E N",16,ZyrixenUi.CYAN,true);add(root,brand,21);
     add(root,text("Owner Control",29,ZyrixenUi.WHITE,true),7);
-    add(root,text("CONTROL CENTER  •  VERSION 0.5",11,ZyrixenUi.MUTED,false),22);
+    add(root,text("CONTROL CENTER  •  VERSION 0.6",11,ZyrixenUi.MUTED,false),22);
 
     LinearLayout serverCard=ZyrixenUi.card(this);
     server=text(api.isEmpty()?"●  SERVER BELUM TERHUBUNG":"●  MENGHUBUNGKAN...",13,ZyrixenUi.MUTED,true);
@@ -59,15 +59,12 @@ public class MainActivity extends Activity {
     serverCard.addView(serverDesc);add(root,serverCard,22);
 
     signIn=ZyrixenUi.card(this);
-    add(signIn,text("OWNER ACCESS",16,ZyrixenUi.WHITE,true),7);
-    add(signIn,text("Aktivasi akun Owner di perangkat ini hanya sekali. Berikutnya masuk otomatis dan aman.",12,ZyrixenUi.MUTED,false),14);
-    ownerEmail=ZyrixenUi.edit(this,"Email Owner",1);
-    ownerEmail.setSingleLine(true);ownerEmail.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
-    add(signIn,ownerEmail,13);
-    secret=ZyrixenUi.edit(this,"Password Owner",1);
+    add(signIn,text("AKTIVASI PERANGKAT OWNER",16,ZyrixenUi.WHITE,true),7);
+    add(signIn,text("Masukkan kode aktivasi satu kali. Setelah terhubung, Owner terbuka otomatis di HP ini.",12,ZyrixenUi.MUTED,false),14);
+    secret=ZyrixenUi.edit(this,"Kode aktivasi Owner",1);
     secret.setSingleLine(true);secret.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
     add(signIn,secret,13);
-    login=ZyrixenUi.button(this,"↗  Masuk sebagai Owner",true);signIn.addView(login);
+    login=ZyrixenUi.button(this,"◈  Aktifkan Perangkat",true);signIn.addView(login);
     login.setOnClickListener(v->authenticate());
     add(root,signIn,18);signIn.setVisibility(View.GONE);
 
@@ -107,6 +104,7 @@ public class MainActivity extends Activity {
     Button reload=ZyrixenUi.button(this,"↻  Refresh Dashboard",false);add(admin,reload,10);
     reload.setOnClickListener(v->refresh());
     Button logout=ZyrixenUi.button(this,"Keluar dari Owner",false);add(admin,logout,17);
+    logout.setVisibility(View.GONE);
     logout.setOnClickListener(v->{
       sessionToken="";OwnerSession.clear(this);secret.setText("");
       signIn.setVisibility(View.VISIBLE);admin.setVisibility(View.GONE);
@@ -182,24 +180,23 @@ public class MainActivity extends Activity {
   }
   void authenticate(){
     if(busy)return;
-    final String email=ownerEmail.getText().toString().trim();
-    final String password=secret.getText().toString();
-    if(email.isEmpty()||password.isEmpty()){toast("Isi email dan password Owner");return;}
-    busy=true;login.setEnabled(false);login.setText("Memverifikasi...");
+    final String pairingCode=secret.getText().toString().trim();
+    if(pairingCode.isEmpty()){toast("Isi kode aktivasi Owner satu kali");return;}
+    busy=true;login.setEnabled(false);login.setText("Mengaktifkan perangkat...");
     new Thread(()->{
       try{
-        JSONObject auth=request("/owner/login","POST",new JSONObject().put("email",email).put("password",password),false);
+        JSONObject auth=request("/owner/activate","POST",new JSONObject().put("code",pairingCode),false);
         sessionToken=auth.getString("access_token");
+        OwnerSession.save(this,auth.getString("refresh_token"));
         JSONObject stats=authenticatedRequest("/admin/stats","GET",null);
         JSONObject config=authenticatedRequest("/admin/config","GET",null);
-        OwnerSession.save(this,auth.getString("refresh_token"));
         runOnUiThread(()->{
           render(stats,config);signIn.setVisibility(View.GONE);admin.setVisibility(View.VISIBLE);
           server.setText("●  OWNER TERHUBUNG");server.setTextColor(ZyrixenUi.CYAN);
           serverDesc.setText("Selamat datang di Zyrixen Control Center.");
           secret.setText("");
         });
-      }catch(Exception e){sessionToken="";toast("Login gagal: "+e.getMessage());}
+      }catch(Exception e){sessionToken="";toast("Aktivasi gagal: "+e.getMessage());}
       finally{busy=false;runOnUiThread(()->{login.setEnabled(true);login.setText("↗  Masuk sebagai Owner");});}
     }).start();
   }
