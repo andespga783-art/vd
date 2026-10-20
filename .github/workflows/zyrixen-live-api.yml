@@ -17,28 +17,14 @@ jobs:
           set -euo pipefail
           curl --fail-with-body -sS --max-time 25 "$API/health" | python3 -c 'import json,sys; assert json.load(sys.stdin)["ok"] is True'
           curl --fail-with-body -sS --max-time 25 "$API/config" | python3 -c 'import json,sys; a=json.load(sys.stdin); assert "enabled" in a and "maintenance" in a'
-          curl --fail-with-body -sS --max-time 25 -X POST "$API/deobfuscate" -H 'Content-Type: application/json' --data '{"source":"print(123)"}' | python3 -c 'import json,sys; assert json.load(sys.stdin)["result"] == "print(123)"'
-      - name: Exercise large source without old 600 KB cutoff
-        env:
-          API: https://hdlxgecizpuljvdoznyv.supabase.co/functions/v1/zyrixen-api
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json
-          with open('/tmp/zyrixen-large.json','w') as f:
-              json.dump({'source':'-- Zyrixen large source\\n' + ('local z=123\\n' * 65000)},f)
-          PY
-          curl --fail-with-body -sS --max-time 90 -X POST "$API/deobfuscate" -H 'Content-Type: application/json' --data-binary @/tmp/zyrixen-large.json -o /tmp/zyrixen-large-response.json
-          python3 - <<'PY'
-          import json
-          with open('/tmp/zyrixen-large-response.json') as f: result=json.load(f)
-          assert len(result['result']) > 600000, 'Large response was cut off'
-          PY
+          curl --fail-with-body -sS --max-time 25 "$API/health" | python3 -c 'import json,sys; assert json.load(sys.stdin)["version"] == "0.9"'
       - name: Check unauthorized admin requests are rejected
         env:
           API: https://hdlxgecizpuljvdoznyv.supabase.co/functions/v1/zyrixen-api
         run: |
           set -euo pipefail
+          status="$(curl -sS -o /tmp/no-user-response -w '%{http_code}' --max-time 25 -X POST "$API/deobfuscate" -H 'Content-Type: application/json' --data '{"source":"print(123)","request_id":"00000000-0000-4000-8000-000000000123"}')"
+          test "$status" = 401
           status="$(curl -sS -o /tmp/owner-response -w '%{http_code}' --max-time 25 "$API/admin/stats")"
           test "$status" = 401
           status="$(curl -sS -o /tmp/owner-pair-response -w '%{http_code}' --max-time 25 -X POST "$API/owner/activate" -H 'Content-Type: application/json' --data '{"code":"invalid"}')"
