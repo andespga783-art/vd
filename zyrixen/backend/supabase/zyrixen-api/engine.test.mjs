@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {decodeLua,detectPatterns} from "./engine.ts";
+import {decodeLua,detectPatterns,aiAnalyze} from "./engine.ts";
 const cases=[
  ["escapes",'local s="\\72\\101\\x6C\\108\\111"','local s="Hello"',5],
  ["quoted_comment",'-- "\\72"\nlocal a="\\72"','-- "\\72"\nlocal a="H"',1],
@@ -33,3 +33,31 @@ for(const [name,src,expected,count] of cases){
 }
 assert.deepEqual(detectPatterns("Protected by Luraph | MoonVeil | PvM Obfuscator | loadstring()"),["luraph","moonveil","prometheus","dynamic_loader"]);
 if(failures)process.exitCode=1;else console.log("PASS ALL",cases.length,"cases");
+
+const env=new Map();
+globalThis.Deno={env:{get:(key)=>env.get(key)}};
+const withoutKey=await aiAnalyze("print(1)",[]);
+assert.equal(withoutKey.status,"disabled");
+env.set("ZYRIXEN_AI_ENABLED","true");
+env.set("AI_GATEWAY_API_KEY","test-placeholder-not-a-real-key");
+env.set("ZYRIXEN_AI_MODEL","test/provider");
+const originalFetch=globalThis.fetch;let aiCalls=0;
+globalThis.fetch=async(url,params)=>{
+ aiCalls++;
+ assert.equal(url,"https://ai-gateway.vercel.sh/v1/chat/completions");
+ assert.ok(params.headers.Authorization.startsWith("Bearer "));
+ const body=JSON.parse(params.body);
+ assert.ok(body.messages[1].content.includes("loadstring"));
+ assert.equal(body.stream,false);
+ return {ok:true,json:async()=>({choices:[{message:{content:"Indikasi loader dinamis; source belum terbuka."}}]})};
+};
+try {
+ const response=await aiAnalyze('loadstring("abc")()',["dynamic_loader"]);
+ assert.equal(response.status,"ready");
+ assert.ok(response.summary.includes("Indikasi"));
+ assert.equal(aiCalls,1);
+ const oversized=await aiAnalyze("x".repeat(10001),[]);
+ assert.equal(oversized.status,"skipped");
+ assert.equal(aiCalls,1);
+ console.log("PASS AI gate and bounded opt-in mock");
+}finally{globalThis.fetch=originalFetch;}
