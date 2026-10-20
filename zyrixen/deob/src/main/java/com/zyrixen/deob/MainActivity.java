@@ -461,7 +461,6 @@ public class MainActivity extends Activity {
           int changes=json.optInt("transformations",0);
           String creditText=json.optBoolean("unlimited",false)?"UNLIMITED":
             json.optInt("credits",0)+" kredit tersisa";
-          info="";
           final String summary=changes==0?"Tidak ada transformasi • kredit tidak dipotong":
             "Diproses: "+json.optInt("charged",0)+" kredit digunakan";
           runOnUiThread(()->{
