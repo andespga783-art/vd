@@ -1,0 +1,32 @@
+name: Verify Zyrixen Engine 1.0
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "zyrixen/backend/supabase/zyrixen-api/**"
+      - "zyrixen/backend/sql/ai_quota_v10.sql"
+      - ".github/workflows/zyrixen-engine-ci.yml"
+  pull_request:
+    paths:
+      - "zyrixen/backend/supabase/zyrixen-api/**"
+      - ".github/workflows/zyrixen-engine-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  static-engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Run Lua decoding regression tests
+        run: node zyrixen/backend/supabase/zyrixen-api/engine.test.mjs
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Type-check Edge Function and engine
+        run: deno check zyrixen/backend/supabase/zyrixen-api/index.ts
