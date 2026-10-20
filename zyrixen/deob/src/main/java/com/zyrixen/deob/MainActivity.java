@@ -16,6 +16,9 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.text.TextWatcher;
+import android.text.Editable;
+import android.text.InputFilter;
 import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -27,11 +30,15 @@ import java.nio.charset.StandardCharsets;
 public class MainActivity extends Activity {
   private static final int OPEN_LUA=101, SAVE_LUA=102;
   private final String api=BuildConfig.BACKEND_URL.trim().replaceAll("/+$","");
-  private EditText input, output;
+  private EditText input;
+  private TextView output;
   private TextView service, serviceDetail, resultInfo, modeLabel;
   private Button pasteTab, linkTab, fileTab, run;
   private int mode=0;
   private String savedResult="";
+  private volatile String sourceBuffer="", fullResult="";
+  private boolean bufferedPaste=false, suppressEdit=false;
+  private static final int MAX_BYTES=8000000, PREVIEW=12000, CLIPBOARD_SAFE=250000;
   private volatile boolean running=false;
 
   void notifyUser(String t){runOnUiThread(()->Toast.makeText(this,t,Toast.LENGTH_LONG).show());}
@@ -69,7 +76,7 @@ public class MainActivity extends Activity {
     TextView brand=label("◈  Z Y R I X E N",16,ZyrixenUi.CYAN,true);put(root,brand,21);
     TextView hero=label("Deobfuscate.\nUnderstand. Build.",29,ZyrixenUi.WHITE,true);
     hero.setLineSpacing(ZyrixenUi.dp(this,4),1);put(root,hero,8);
-    put(root,label("LUA ANALYSIS STUDIO  •  VERSION 0.3",11,ZyrixenUi.MUTED,false),20);
+    put(root,label("LUA ANALYSIS STUDIO  •  VERSION 0.5",11,ZyrixenUi.MUTED,false),20);
 
     LinearLayout online=ZyrixenUi.card(this);
     service=label(api.isEmpty()?"●  MODE OFFLINE":"●  MENYAMBUNG KE SERVER",13,api.isEmpty()?ZyrixenUi.CYAN:ZyrixenUi.MUTED,true);
@@ -85,11 +92,20 @@ public class MainActivity extends Activity {
     fileTab=ZyrixenUi.button(this,"▤ File",false);
     selector.addView(pasteTab,ZyrixenUi.weighted(this,5));selector.addView(linkTab,ZyrixenUi.weighted(this,5));selector.addView(fileTab,ZyrixenUi.weighted(this,5));
     put(root,selector,18);
-    pasteTab.setOnClickListener(v->modeSelect(0));linkTab.setOnClickListener(v->modeSelect(1));fileTab.setOnClickListener(v->modeSelect(2));
+    pasteTab.setOnClickListener(v->{modeSelect(0);pasteFromClipboard();});
+    linkTab.setOnClickListener(v->modeSelect(1));
+    fileTab.setOnClickListener(v->modeSelect(2));
 
     modeLabel=label("SOURCE LUA",11,ZyrixenUi.MUTED,true);put(root,modeLabel,9);
     input=ZyrixenUi.edit(this,"Tempel kode Lua di sini...",9);
-    input.setTypeface(Typeface.MONOSPACE);put(root,input,16);
+    input.setTypeface(Typeface.MONOSPACE);
+    input.setFilters(new InputFilter[]{new InputFilter.LengthFilter(120000)});
+    input.addTextChangedListener(new TextWatcher(){
+      public void beforeTextChanged(CharSequence t,int start,int count,int after){}
+      public void onTextChanged(CharSequence t,int start,int before,int count){}
+      public void afterTextChanged(Editable e){if(!suppressEdit&&mode==0)bufferedPaste=false;}
+    });
+    put(root,input,16);
 
     run=ZyrixenUi.button(this,"✦   PROSES DEOBFUSCATE",true);put(root,run,22);
     run.setOnClickListener(v->process());
@@ -99,20 +115,26 @@ public class MainActivity extends Activity {
     head.addView(label("HASIL ANALISIS",14,ZyrixenUi.WHITE,true),new LinearLayout.LayoutParams(0,-2,1));
     TextView tag=label("LUA",11,ZyrixenUi.CYAN,true);head.addView(tag);put(resultCard,head,10);
     resultInfo=label("Belum ada hasil. Proses kode Lua untuk memulai.",12,ZyrixenUi.MUTED,false);put(resultCard,resultInfo,12);
-    output=ZyrixenUi.edit(this,"Hasil kode yang sudah diproses muncul di sini...",8);
-    output.setTypeface(Typeface.MONOSPACE);put(resultCard,output,13);
+    output=label("Hasil kode muncul di sini...",13,ZyrixenUi.MUTED,false);
+    output.setTypeface(Typeface.MONOSPACE);output.setTextIsSelectable(true);
+    output.setMinHeight(ZyrixenUi.dp(this,180));
+    output.setBackground(ZyrixenUi.border(ZyrixenUi.SURFACE,ZyrixenUi.RAISED,this));
+    ZyrixenUi.pad(output,this,14,14,14,14);put(resultCard,output,13);
     LinearLayout buttons=ZyrixenUi.row(this);
     Button copy=ZyrixenUi.button(this,"⧉  Copy All",false);
     Button save=ZyrixenUi.button(this,"⇩  Download",false);
     buttons.addView(copy,ZyrixenUi.weighted(this,7));buttons.addView(save,ZyrixenUi.weighted(this,0));resultCard.addView(buttons);
     copy.setOnClickListener(v->{
-      String text=output.getText().toString();
+      String text=fullResult;
       if(text.isEmpty()){notifyUser("Belum ada hasil");return;}
-      ((ClipboardManager)getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("Zyrixen Lua",text));
-      notifyUser("Hasil tersalin");
+      if(text.length()>CLIPBOARD_SAFE){notifyUser("Hasil besar: gunakan Download untuk menyimpan semuanya tanpa crash");return;}
+      try{
+        ((ClipboardManager)getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("Zyrixen Lua",text));
+        notifyUser("Seluruh hasil tersalin");
+      }catch(Exception e){notifyUser("Clipboard tidak cukup besar, gunakan Download");}
     });
     save.setOnClickListener(v->{
-      savedResult=output.getText().toString();
+      savedResult=fullResult;
       if(savedResult.isEmpty()){notifyUser("Belum ada hasil");return;}
       Intent i=new Intent(Intent.ACTION_CREATE_DOCUMENT);i.addCategory(Intent.CATEGORY_OPENABLE);
       i.setType("text/plain");i.putExtra(Intent.EXTRA_TITLE,"zyrixen_deobsefactor.lua");startActivityForResult(i,SAVE_LUA);
@@ -135,17 +157,51 @@ public class MainActivity extends Activity {
     if(request==OPEN_LUA){
       new Thread(()->{
         try(InputStream in=getContentResolver().openInputStream(uri)){
-          String code=readLimited(in,600000);
-          runOnUiThread(()->{mode=0;modeSelect(0);input.setText(code);notifyUser("File dimuat");});
+          if(in==null)throw new Exception("File tidak tersedia");
+          String code=readLimited(in,MAX_BYTES);
+          sourceBuffer=code;bufferedPaste=false;
+          runOnUiThread(()->{
+            mode=2;input.setVisibility(View.GONE);
+            modeLabel.setText("FILE LUA • "+code.length()+" karakter • siap diproses");
+            resultInfo.setText("File siap diproses. Source tidak dimuat penuh ke editor untuk menjaga performa.");
+          });
         }catch(Exception e){notifyUser("Gagal membaca file: "+e.getMessage());}
       }).start();
     }
     if(request==SAVE_LUA){
-      try(OutputStream out=getContentResolver().openOutputStream(uri)){
-        if(out==null)throw new Exception("Tidak bisa menulis file");
-        out.write(savedResult.getBytes(StandardCharsets.UTF_8));notifyUser("File Lua disimpan");
-      }catch(Exception e){notifyUser("Gagal menyimpan: "+e.getMessage());}
+      final String toSave=savedResult;
+      new Thread(()->{
+        try(OutputStream out=getContentResolver().openOutputStream(uri)){
+          if(out==null)throw new Exception("Tidak bisa menulis file");
+          byte[] buffer=toSave.getBytes(StandardCharsets.UTF_8);
+          out.write(buffer);out.flush();notifyUser("File Lua lengkap disimpan");
+        }catch(Exception e){notifyUser("Gagal menyimpan: "+e.getMessage());}
+      }).start();
     }
+  }
+  private static String preview(String value){
+    if(value.length()<=PREVIEW)return value;
+    return value.substring(0,PREVIEW)+"\n\n… CUPlIKAN "+PREVIEW+" karakter. Download menyimpan hasil lengkap ("+value.length()+" karakter).";
+  }
+  void pasteFromClipboard(){
+    new Thread(()->{
+      try{
+        ClipboardManager cm=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
+        ClipData clip=cm.getPrimaryClip();
+        if(clip==null||clip.getItemCount()==0)throw new Exception("Clipboard kosong");
+        CharSequence c=clip.getItemAt(0).coerceToText(this);
+        if(c==null)throw new Exception("Clipboard kosong");
+        String content=c.toString();
+        if(content.getBytes(StandardCharsets.UTF_8).length>MAX_BYTES)throw new Exception("Source di atas 8 MB: pilih file yang lebih kecil");
+        sourceBuffer=content;bufferedPaste=true;
+        runOnUiThread(()->{
+          suppressEdit=true;
+          try{input.setText(preview(content));}finally{suppressEdit=false;}
+          modeLabel.setText("SOURCE LUA • "+content.length()+" karakter tersimpan penuh");
+          notifyUser("Source tersimpan • siap diproses");
+        });
+      }catch(Exception e){notifyUser("Tidak bisa paste: "+e.getMessage());}
+    }).start();
   }
   static String readLimited(InputStream in,int max)throws Exception {
     ByteArrayOutputStream bytes=new ByteArrayOutputStream();byte[] buf=new byte[4096];int n;
@@ -163,7 +219,7 @@ public class MainActivity extends Activity {
       }
       int code=c.getResponseCode();
       try(InputStream in=code<400?c.getInputStream():c.getErrorStream()){
-        String text=readLimited(in,900000);
+        String text=readLimited(in,MAX_BYTES+2000000);
         if(code>=400)throw new Exception("Server "+code+": "+text);
         return new JSONObject(text);
       }
@@ -210,8 +266,9 @@ public class MainActivity extends Activity {
   }
   void process(){
     if(running)return;
-    final String text=input.getText().toString().trim();final int selectedMode=mode;
-    if(selectedMode!=2&&text.isEmpty()){notifyUser("Masukkan source atau URL dahulu");return;}
+    final int selectedMode=mode;
+    final String text=(selectedMode==2||selectedMode==0&&bufferedPaste)?sourceBuffer:input.getText().toString();
+    if(text.trim().isEmpty()){notifyUser("Masukkan source atau URL dahulu");return;}
     running=true;run.setText("◌  MEMPROSES...");run.setEnabled(false);
     new Thread(()->{
       try{
@@ -221,7 +278,7 @@ public class MainActivity extends Activity {
           HttpURLConnection c=(HttpURLConnection)new URL(source).openConnection();
           c.setConnectTimeout(10000);c.setReadTimeout(15000);c.setInstanceFollowRedirects(false);
           try{if(c.getResponseCode()!=200)throw new Exception("Raw URL tidak tersedia");
-            try(InputStream in=c.getInputStream()){source=readLimited(in,600000);}
+            try(InputStream in=c.getInputStream()){source=readLimited(in,MAX_BYTES);}
           }finally{c.disconnect();}
         }
         if(source.isEmpty())throw new Exception("Source masih kosong");
@@ -229,10 +286,24 @@ public class MainActivity extends Activity {
         if(api.isEmpty()){
           result=localDecode(source);info="Decoded lokal • belum menjamin semua obfuscation terbuka";
         }else{
-          JSONObject json=request("/deobfuscate","POST",new JSONObject().put("source",source));
-          result=json.optString("result",source);info="Server Zyrixen • "+json.optInt("transformations",0)+" transformasi";
+          JSONObject json;
+          try{json=request("/deobfuscate","POST",new JSONObject().put("source",source));}
+          catch(Exception e){
+            if(!e.getMessage().contains("413"))throw e;
+            result=localDecode(source);
+            info="Source terlalu besar untuk server; decoder ringan offline digunakan. Full source tetap tersimpan.";
+            runOnUiThread(()->{fullResult=result;output.setText(preview(result));resultInfo.setText(info);});
+            return;
+          }
+          result=json.optString("result",source);
+          int changes=json.optInt("transformations",0);
+          info=changes==0?"Belum ada lapisan obfuscation yang berhasil dibuka pada percobaan ini.":"Zyrixen Engine "+json.optString("engine_version","")+" • "+changes+" transformasi";
         }
-        runOnUiThread(()->{output.setText(result);resultInfo.setText(info);});
+        runOnUiThread(()->{
+          fullResult=result;
+          output.setText(preview(result));
+          resultInfo.setText(info+" • output "+result.length()+" karakter");
+        });
       }catch(Exception e){notifyUser(e.getMessage());}
       finally{running=false;runOnUiThread(()->{run.setEnabled(true);run.setText("✦   PROSES DEOBFUSCATE");});}
     }).start();
