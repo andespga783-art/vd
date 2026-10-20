@@ -86,8 +86,11 @@ jobs:
           script: |
             set -e
             find downloaded-apks -name '*.apk' -print
-            adb install -r downloaded-apks/deob-debug.apk
-            adb install -r downloaded-apks/owner-debug.apk
+            DEOB_APK="$(find downloaded-apks -type f -name 'deob-debug.apk' -print -quit)"
+            OWNER_APK="$(find downloaded-apks -type f -name 'owner-debug.apk' -print -quit)"
+            test -n "$DEOB_APK" && test -n "$OWNER_APK"
+            adb install -r "$DEOB_APK"
+            adb install -r "$OWNER_APK"
             adb shell pm path com.zyrixen.deob
             adb shell pm path com.zyrixen.owner
             adb shell am start -n com.zyrixen.deob/.MainActivity
