@@ -11,7 +11,8 @@ public class MainActivity extends Activity {
  if(data!=null){c.setDoOutput(true);c.setRequestProperty("Content-Type","application/json");try(OutputStream out=c.getOutputStream()){out.write(data.toString().getBytes("UTF-8"));}}
  int status=c.getResponseCode();InputStream s=status<400?c.getInputStream():c.getErrorStream();ByteArrayOutputStream bytes=new ByteArrayOutputStream();byte[] buff=new byte[4096];int n;while((n=s.read(buff))!=-1)bytes.write(buff,0,n);String text=bytes.toString("UTF-8");if(status>=400)throw new Exception("HTTP "+status+": "+text);return new JSONObject(text);
  }finally{c.disconnect();}}
- void work(Runnable job){new Thread(()->{try{job.run();}catch(Exception e){toast(e.getMessage());}}).start();}
+ interface Task { void run() throws Exception; }
+ void work(Task job){new Thread(()->{try{job.run();}catch(Exception e){toast(e.getMessage());}}).start();}
  public void onCreate(Bundle b){super.onCreate(b);ScrollView sc=new ScrollView(this);layout=new LinearLayout(this);layout.setPadding(24,24,24,24);layout.setOrientation(1);sc.addView(layout);setContentView(sc);TextView title=new TextView(this);title.setText("ZYRIXEN OWNER PANEL");title.setTextSize(23);layout.addView(title);
  url=field("Backend HTTPS");token=field("Owner token");token.setInputType(129);notice=field("Pengumuman");limit=field("Batas karakter");active=new CheckBox(this);active.setText("Deobfuscator aktif");active.setChecked(true);layout.addView(active);maintenance=new CheckBox(this);maintenance.setText("Mode maintenance");layout.addView(maintenance);info=new TextView(this);layout.addView(info);
  button("Lihat statistik",()->work(()->{JSONObject j=request("/admin/stats","GET",null);runOnUiThread(()->info.setText(j.toString(2)));}));
