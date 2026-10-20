@@ -6,10 +6,31 @@ android {
         applicationId 'com.zyrixen.owner'
         minSdk 26
         targetSdk 35
-        versionCode 8
-        versionName '0.8'
+        versionCode 9
+        versionName '0.9'
         def endpoint = System.getenv('ZYRIXEN_BACKEND_URL') ?: 'https://hdlxgecizpuljvdoznyv.supabase.co/functions/v1/zyrixen-api'
         buildConfigField 'String', 'BACKEND_URL', "\""+endpoint+"\""
+    }
+    signingConfigs {
+        release {
+            def keyPath = System.getenv('ZYRIXEN_SIGNING_STORE_FILE')
+            if (keyPath && System.getenv('ZYRIXEN_SIGNING_STORE_PASSWORD')
+                && System.getenv('ZYRIXEN_SIGNING_KEY_ALIAS')
+                && System.getenv('ZYRIXEN_SIGNING_KEY_PASSWORD')) {
+                storeFile file(keyPath)
+                storePassword System.getenv('ZYRIXEN_SIGNING_STORE_PASSWORD')
+                keyAlias System.getenv('ZYRIXEN_SIGNING_KEY_ALIAS')
+                keyPassword System.getenv('ZYRIXEN_SIGNING_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (System.getenv('ZYRIXEN_SIGNING_STORE_FILE')) {
+                signingConfig signingConfigs.release
+            }
+            minifyEnabled false
+        }
     }
     buildFeatures { buildConfig true }
 }
