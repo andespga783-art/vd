@@ -56,7 +56,15 @@ public class MainActivity extends Activity {
     getWindow().setStatusBarColor(ZyrixenUi.BG);getWindow().setNavigationBarColor(ZyrixenUi.BG);
     getWindow().getDecorView().setSystemUiVisibility(0);
     ScrollView sc=new ScrollView(this);sc.setFillViewport(true);sc.setBackgroundColor(ZyrixenUi.BG);
-    LinearLayout root=ZyrixenUi.vertical(this);ZyrixenUi.pad(root,this,20,24,20,30);sc.addView(root);setContentView(sc);
+    LinearLayout root=ZyrixenUi.vertical(this);ZyrixenUi.pad(root,this,20,24,20,30);
+    if(android.os.Build.VERSION.SDK_INT>=30){
+      root.setOnApplyWindowInsetsListener((v,insets)->{
+        android.graphics.Insets bars=insets.getInsets(android.view.WindowInsets.Type.systemBars());
+        v.setPadding(ZyrixenUi.dp(this,20),ZyrixenUi.dp(this,24)+bars.top,
+          ZyrixenUi.dp(this,20),ZyrixenUi.dp(this,30)+bars.bottom);
+        return insets;
+      });
+    }else{root.setFitsSystemWindows(true);}sc.addView(root);setContentView(sc);
 
     TextView brand=label("◈  Z Y R I X E N",16,ZyrixenUi.CYAN,true);put(root,brand,21);
     TextView hero=label("Deobfuscate.\nUnderstand. Build.",29,ZyrixenUi.WHITE,true);
