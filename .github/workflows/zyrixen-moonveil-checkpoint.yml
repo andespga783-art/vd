@@ -1,0 +1,33 @@
+name: Archive MoonVeil v2 IR Checkpoint
+on:
+  push:
+    paths:
+      - "zyrixen/recovery_samples/moonveil_2_0_24/**"
+      - ".github/workflows/zyrixen-moonveil-checkpoint.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-ir:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check partial Lua IR metadata
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("zyrixen/recovery_samples/moonveil_2_0_24/autofarm-premium_VM_IR_PARTIAL_deobsefactor_by_zyrixen.lua")
+          s=p.read_text()
+          assert s.startswith("-- deobsefactor by zyrixen")
+          assert 'status = "PARTIAL_VM_IR_OPCODE_UNMAPPED"' in s
+          assert "prototype_count = 88" in s
+          assert "instruction_count = 3060" in s
+          print("IR checkpoint verified:",p.stat().st_size,"bytes")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Zyrixen-MoonVeil-v2-IR-PARTIAL
+          path: zyrixen/recovery_samples/moonveil_2_0_24/autofarm-premium_VM_IR_PARTIAL_deobsefactor_by_zyrixen.lua
+          if-no-files-found: error
