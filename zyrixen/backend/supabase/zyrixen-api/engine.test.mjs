@@ -13,7 +13,7 @@ const cases=[
  ["unrelated",'local data={1,2,3};print(data[1])','local data={1,2,3};print(data[1])',0],
  ["protected",'-- MoonVeil\nloadstring("abc")()','-- MoonVeil\nloadstring("abc")()',0],
  ["large","a".repeat(350001),"a".repeat(350001),0],
- ["large_escape","-- huge\\n"+"a".repeat(350000)+'local s="\\\\72"',"-- huge\\n"+"a".repeat(350000)+'local s="H"',1]
+ ["large_escape","-- huge\n"+"a".repeat(350000)+'local s="\\72"',"-- huge\n"+"a".repeat(350000)+'local s="H"',1]
 ];
 let failures=0;
 for(const [name,src,expected,count] of cases){
