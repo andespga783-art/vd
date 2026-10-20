@@ -61,6 +61,38 @@ jobs:
             zyrixen/owner/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
+      - name: Build permanently signed release APKs
+        env:
+          KEYSTORE_B64: ${{ secrets.ZYRIXEN_KEYSTORE_B64 }}
+          ZYRIXEN_SIGNING_STORE_PASSWORD: ${{ secrets.ZYRIXEN_SIGNING_STORE_PASSWORD }}
+          ZYRIXEN_SIGNING_KEY_ALIAS: ${{ secrets.ZYRIXEN_SIGNING_KEY_ALIAS }}
+          ZYRIXEN_SIGNING_KEY_PASSWORD: ${{ secrets.ZYRIXEN_SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_B64}" ]; then
+            echo "Release signing belum dikonfigurasi. Debug APK tetap dibuild untuk pengujian." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          test -n "$ZYRIXEN_SIGNING_STORE_PASSWORD"
+          test -n "$ZYRIXEN_SIGNING_KEY_ALIAS"
+          test -n "$ZYRIXEN_SIGNING_KEY_PASSWORD"
+          export ZYRIXEN_SIGNING_STORE_FILE="$RUNNER_TEMP/zyrixen-release.jks"
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$ZYRIXEN_SIGNING_STORE_FILE"
+          chmod 600 "$ZYRIXEN_SIGNING_STORE_FILE"
+          (cd zyrixen && gradle :deob:assembleRelease :owner:assembleRelease --no-daemon --stacktrace)
+          mkdir -p signed-apks
+          cp zyrixen/deob/build/outputs/apk/release/deob-release.apk signed-apks/Zyrixen_Deobfuscator_v0.9.apk
+          cp zyrixen/owner/build/outputs/apk/release/owner-release.apk signed-apks/Zyrixen_Owner_v0.9.apk
+          for apk in signed-apks/*.apk; do
+            "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$apk"
+          done
+          echo "Signed release APK v0.9 berhasil dibuat." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Zyrixen-v0.9-Signed-APKs
+          path: signed-apks/*.apk
+          if-no-files-found: ignore
+
   android16-install-test:
     needs: build
     runs-on: ubuntu-latest
