@@ -31,6 +31,25 @@ public class MainActivity extends Activity {
   private Button login, save;
   private OwnerUsersPanel usersPanel;
   private volatile boolean busy=false;
+  private final android.os.Handler userPoll=new android.os.Handler(android.os.Looper.getMainLooper());
+  private final Runnable usersTicker=new Runnable(){
+    @Override public void run(){
+      if(admin!=null && admin.getVisibility()==View.VISIBLE && hasOwnerSession()
+          && usersPanel!=null && usersPanel.canAutoRefresh()){
+        usersPanel.load();
+      }
+      userPoll.postDelayed(this,15000);
+    }
+  };
+  @Override protected void onResume(){
+    super.onResume();
+    userPoll.removeCallbacks(usersTicker);
+    userPoll.postDelayed(usersTicker,15000);
+  }
+  @Override protected void onPause(){
+    userPoll.removeCallbacks(usersTicker);
+    super.onPause();
+  }
 
   void add(LinearLayout parent,View child,int bottom){parent.addView(child,ZyrixenUi.lp(this,bottom));}
   TextView text(String s,int sp,int color,boolean bold){return ZyrixenUi.text(this,s,sp,color,bold);}
@@ -51,7 +70,7 @@ public class MainActivity extends Activity {
 
     TextView brand=text("◈  Z Y R I X E N",16,ZyrixenUi.CYAN,true);add(root,brand,21);
     add(root,text("Owner Control",29,ZyrixenUi.WHITE,true),7);
-    add(root,text("CONTROL CENTER  •  VERSION 0.8",11,ZyrixenUi.MUTED,false),22);
+    add(root,text("CONTROL CENTER  •  VERSION 0.9",11,ZyrixenUi.MUTED,false),22);
 
     LinearLayout serverCard=ZyrixenUi.card(this);
     server=text(api.isEmpty()?"●  SERVER BELUM TERHUBUNG":"●  MENGHUBUNGKAN...",13,ZyrixenUi.MUTED,true);
