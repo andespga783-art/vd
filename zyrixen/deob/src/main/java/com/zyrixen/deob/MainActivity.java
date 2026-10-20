@@ -35,7 +35,10 @@ public class MainActivity extends Activity {
   private final String api=BuildConfig.BACKEND_URL.trim().replaceAll("/+$","");
   private EditText input;
   private TextView output;
-  private TextView service, serviceDetail, resultInfo, modeLabel;
+  private TextView service, serviceDetail, resultInfo, modeLabel, userNameLabel, creditLabel;
+  private LinearLayout signupPanel, signedPanel;
+  private EditText usernameInput;
+  private Button registerButton;
   private Button pasteTab, linkTab, fileTab, run;
   private int mode=0;
   private String savedResult="";
@@ -45,12 +48,16 @@ public class MainActivity extends Activity {
   private volatile boolean running=false;
   private volatile boolean foreground=false;
   private volatile boolean serverAllowed=false;
+  private volatile boolean userReady=false;
+  private volatile boolean userBanned=false;
+  private final AtomicBoolean userChecking=new AtomicBoolean(false);
   private final AtomicBoolean statusChecking=new AtomicBoolean(false);
   private final Handler statusHandler=new Handler(Looper.getMainLooper());
   private final Runnable statusTicker=new Runnable(){
     @Override public void run(){
       if(foreground){
         checkStatus();
+        refreshUser();
         statusHandler.postDelayed(this,10000);
       }
     }
@@ -91,13 +98,34 @@ public class MainActivity extends Activity {
     TextView brand=label("◈  Z Y R I X E N",16,ZyrixenUi.CYAN,true);put(root,brand,21);
     TextView hero=label("Deobfuscate.\nUnderstand. Build.",29,ZyrixenUi.WHITE,true);
     hero.setLineSpacing(ZyrixenUi.dp(this,4),1);put(root,hero,8);
-    put(root,label("LUA ANALYSIS STUDIO  •  VERSION 0.7",11,ZyrixenUi.MUTED,false),20);
+    put(root,label("LUA ANALYSIS STUDIO  •  VERSION 0.8",11,ZyrixenUi.MUTED,false),20);
 
     LinearLayout online=ZyrixenUi.card(this);
     service=label(api.isEmpty()?"●  MODE OFFLINE":"●  MENYAMBUNG KE SERVER",13,api.isEmpty()?ZyrixenUi.CYAN:ZyrixenUi.MUTED,true);
     put(online,service,5);
     serviceDetail=label(api.isEmpty()?"Decoder ringan dapat dipakai tanpa server.":"Status layanan dicek otomatis saat aplikasi dibuka.",12,ZyrixenUi.MUTED,false);
     online.addView(serviceDetail);put(root,online,22);
+
+    LinearLayout account=ZyrixenUi.card(this);
+    put(account,label("AKUN PENGGUNA ZYRIXEN",14,ZyrixenUi.WHITE,true),12);
+    signupPanel=ZyrixenUi.vertical(this);
+    put(signupPanel,label("Masukkan username sekali untuk membuat akun. Kredit diatur oleh Owner.",12,ZyrixenUi.MUTED,false),10);
+    usernameInput=ZyrixenUi.edit(this,"Contoh: ZyrixenUser",1);
+    usernameInput.setSingleLine(true);
+    usernameInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(20)});
+    put(signupPanel,usernameInput,12);
+    registerButton=ZyrixenUi.button(this,"✦  Daftar Username",true);
+    registerButton.setOnClickListener(v->registerUser());
+    signupPanel.addView(registerButton);
+    account.addView(signupPanel);
+    signedPanel=ZyrixenUi.vertical(this);
+    userNameLabel=label("—",17,ZyrixenUi.WHITE,true);put(signedPanel,userNameLabel,9);
+    creditLabel=label("Memuat kredit...",14,ZyrixenUi.CYAN,true);signedPanel.addView(creditLabel);
+    account.addView(signedPanel);
+    put(root,account,22);
+    boolean registered=UserSession.load(this)!=null;
+    signupPanel.setVisibility(registered?View.GONE:View.VISIBLE);
+    signedPanel.setVisibility(registered?View.VISIBLE:View.GONE);
 
     put(root,label("WORKSPACE",12,ZyrixenUi.MUTED,true),10);
     LinearLayout selector=ZyrixenUi.row(this);
@@ -239,6 +267,10 @@ public class MainActivity extends Activity {
     HttpURLConnection c=(HttpURLConnection)new URL(api+path).openConnection();
     try{
       c.setConnectTimeout(9000);c.setReadTimeout(20000);c.setRequestMethod(method);
+      if(path.equals("/user/me")||path.equals("/deobfuscate")){
+        String token=UserSession.load(this);
+        if(token!=null)c.setRequestProperty("Authorization","Bearer "+token);
+      }
       if(payload!=null){
         c.setDoOutput(true);c.setRequestProperty("Content-Type","application/json; charset=utf-8");
         try(OutputStream out=c.getOutputStream()){out.write(payload.toString().getBytes(StandardCharsets.UTF_8));}
@@ -272,10 +304,77 @@ public class MainActivity extends Activity {
       service.setTextColor(ZyrixenUi.CYAN);
       serviceDetail.setText(announcement.isEmpty()?"ZYRIXEN Online siap dipakai.":announcement);
     }
-    if(!running){
-      run.setEnabled(serverAllowed);
-      run.setText(serverAllowed?"✦   PROSES DEOBFUSCATE":"⏸  LAYANAN NONAKTIF");
+    updateRunButton();
+  }
+  void updateRunButton(){
+    if(run==null||running)return;
+    boolean enabled=serverAllowed&&userReady&&!userBanned;
+    run.setEnabled(enabled);
+    run.setText(!serverAllowed?"⏸  LAYANAN NONAKTIF":
+      !userReady?"◈  DAFTARKAN USERNAME":
+      userBanned?"⊘  AKUN DIBLOKIR":"✦   PROSES DEOBFUSCATE");
+  }
+  void renderUser(JSONObject obj){
+    JSONObject user=obj.optJSONObject("user");
+    if(user==null)return;
+    userReady=true;userBanned=user.optBoolean("banned",false);
+    signupPanel.setVisibility(View.GONE);signedPanel.setVisibility(View.VISIBLE);
+    userNameLabel.setText("◈  @"+user.optString("username",""));
+    String balance=user.optBoolean("unlimited",false)?"∞ UNLIMITED":"✦  "+user.optInt("credits",0)+" KREDIT";
+    creditLabel.setText(userBanned?"⊘  AKUN DIBLOKIR OWNER":balance);
+    creditLabel.setTextColor(userBanned?ZyrixenUi.RED:ZyrixenUi.CYAN);
+    updateRunButton();
+  }
+  void refreshUser(){
+    if(api.isEmpty())return;
+    if(!userChecking.compareAndSet(false,true))return;
+    new Thread(()->{
+      try{
+        String token=UserSession.load(this);
+        if(token==null){
+          userReady=false;
+          runOnUiThread(()->{
+            signupPanel.setVisibility(View.VISIBLE);
+            signedPanel.setVisibility(View.GONE);updateRunButton();
+          });
+          return;
+        }
+        JSONObject response=request("/user/me","GET",null);
+        runOnUiThread(()->renderUser(response));
+      }catch(Exception e){
+        if(e.getMessage()!=null&&e.getMessage().startsWith("Server 401")){
+          UserSession.clear(this);
+          userReady=false;
+          runOnUiThread(()->{
+            signupPanel.setVisibility(View.VISIBLE);
+            signedPanel.setVisibility(View.GONE);updateRunButton();
+          });
+        }else{
+          runOnUiThread(()->creditLabel.setText("Saldo belum bisa disegarkan"));
+        }
+      }finally{userChecking.set(false);}
+    }).start();
+  }
+  void registerUser(){
+    final String name=usernameInput.getText().toString().trim();
+    if(!name.matches("[A-Za-z][A-Za-z0-9_]{2,19}")){
+      notifyUser("Username 3–20 karakter, awali huruf. Boleh angka dan underscore.");return;
     }
+    registerButton.setEnabled(false);registerButton.setText("Mendaftarkan...");
+    new Thread(()->{
+      try{
+        if(UserSession.load(this)!=null)throw new Exception("Perangkat sudah terdaftar");
+        JSONObject response=request("/user/register","POST",new JSONObject().put("username",name));
+        UserSession.save(this,response.getString("access_token"));
+        runOnUiThread(()->{
+          renderUser(response);
+          notifyUser("Username berhasil didaftarkan. Minta kredit ke Owner.");
+        });
+      }catch(Exception e){notifyUser("Gagal daftar: "+e.getMessage());}
+      finally{runOnUiThread(()->{
+        registerButton.setEnabled(true);registerButton.setText("✦  Daftar Username");
+      });}
+    }).start();
   }
   void checkStatus(){
     if(api.isEmpty())return;
@@ -322,6 +421,8 @@ public class MainActivity extends Activity {
   }
   void process(){
     if(running)return;
+    if(!userReady){notifyUser("Daftarkan username dahulu");return;}
+    if(userBanned){notifyUser("Akun diblokir oleh Owner");return;}
     if(!api.isEmpty()&&!serverAllowed){
       checkStatus();
       notifyUser("Layanan belum aktif. Ikuti pengaturan Zyrixen Owner.");
@@ -354,10 +455,21 @@ public class MainActivity extends Activity {
         if(api.isEmpty()){
           result=localDecode(source);info="Decoded lokal • belum menjamin semua obfuscation terbuka";
         }else{
-          JSONObject json=request("/deobfuscate","POST",new JSONObject().put("source",source));
+          JSONObject json=request("/deobfuscate","POST",
+            new JSONObject().put("source",source).put("request_id",java.util.UUID.randomUUID().toString()));
           result=json.optString("result",source);
           int changes=json.optInt("transformations",0);
-          info=changes==0?"Belum ada lapisan obfuscation yang berhasil dibuka pada percobaan ini.":"Zyrixen Engine "+json.optString("engine_version","")+" • "+changes+" transformasi";
+          String creditText=json.optBoolean("unlimited",false)?"UNLIMITED":
+            json.optInt("credits",0)+" kredit tersisa";
+          info="";
+          final String summary=changes==0?"Tidak ada transformasi • kredit tidak dipotong":
+            "Diproses: "+json.optInt("charged",0)+" kredit digunakan";
+          runOnUiThread(()->{
+            if(creditLabel!=null)creditLabel.setText(json.optBoolean("unlimited",false)?"∞ UNLIMITED":
+              "✦  "+json.optInt("credits",0)+" KREDIT");
+          });
+          info=summary+" • "+creditText+" • Zyrixen Engine "+
+            json.optString("engine_version","")+" • "+changes+" transformasi";
         }
         runOnUiThread(()->{
           fullResult=result;
@@ -369,8 +481,7 @@ public class MainActivity extends Activity {
         running=false;
         runOnUiThread(()->{
           boolean allowed=api.isEmpty()||serverAllowed;
-          run.setEnabled(allowed);
-          run.setText(allowed?"✦   PROSES DEOBFUSCATE":"⏸  LAYANAN NONAKTIF");
+          updateRunButton();
         });
       }
     }).start();
