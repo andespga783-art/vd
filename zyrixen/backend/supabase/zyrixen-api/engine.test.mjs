@@ -9,7 +9,7 @@ const cases=[
  ["char_binary",'return string.char(0,65,10)','return "\\000A\\010"',1],
  ["char_unsafe",'local string={} return string.char(72)','local string={} return string.char(72)',0],
  ["join",'return "Z" .. \'Y\' .. "X"','return "ZYX"',2],
- ["join_escaped",'return "\\57" .. "9"','return "9" .. "9"',1],
+ ["join_escaped",'return "\\57" .. "9"','return "99"',2],
  ["unrelated",'local data={1,2,3};print(data[1])','local data={1,2,3};print(data[1])',0],
  ["protected",'-- MoonVeil\nloadstring("abc")()','-- MoonVeil\nloadstring("abc")()',0],
  ["large","a".repeat(350001),"a".repeat(350001),0]
