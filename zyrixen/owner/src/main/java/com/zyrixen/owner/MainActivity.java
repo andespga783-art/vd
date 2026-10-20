@@ -26,7 +26,7 @@ public class MainActivity extends Activity {
   private String sessionToken="";
   private LinearLayout root, signIn, admin;
   private TextView server, serverDesc, jobs, characters, lastAction;
-  private EditText secret, notice, limit;
+  private EditText ownerEmail, secret, notice, limit;
   private CheckBox enabled, maintenance;
   private Button login, save;
   private volatile boolean busy=false;
@@ -50,7 +50,7 @@ public class MainActivity extends Activity {
 
     TextView brand=text("◈  Z Y R I X E N",16,ZyrixenUi.CYAN,true);add(root,brand,21);
     add(root,text("Owner Control",29,ZyrixenUi.WHITE,true),7);
-    add(root,text("CONTROL CENTER  •  VERSION 0.3",11,ZyrixenUi.MUTED,false),22);
+    add(root,text("CONTROL CENTER  •  VERSION 0.4",11,ZyrixenUi.MUTED,false),22);
 
     LinearLayout serverCard=ZyrixenUi.card(this);
     server=text(api.isEmpty()?"●  SERVER BELUM TERHUBUNG":"●  MENGHUBUNGKAN...",13,ZyrixenUi.MUTED,true);
@@ -60,8 +60,11 @@ public class MainActivity extends Activity {
 
     signIn=ZyrixenUi.card(this);
     add(signIn,text("OWNER ACCESS",16,ZyrixenUi.WHITE,true),7);
-    add(signIn,text("Panel ini hanya untuk pemilik Zyrixen. Masukkan token akses Owner untuk masuk.",12,ZyrixenUi.MUTED,false),14);
-    secret=ZyrixenUi.edit(this,"Owner access token",1);
+    add(signIn,text("Panel ini hanya untuk pemilik Zyrixen. Masuk menggunakan akun Owner Zyrixen yang terverifikasi.",12,ZyrixenUi.MUTED,false),14);
+    ownerEmail=ZyrixenUi.edit(this,"Email Owner",1);
+    ownerEmail.setSingleLine(true);ownerEmail.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+    add(signIn,ownerEmail,13);
+    secret=ZyrixenUi.edit(this,"Password Owner",1);
     secret.setSingleLine(true);secret.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD);
     add(signIn,secret,13);
     login=ZyrixenUi.button(this,"↗  Masuk sebagai Owner",true);signIn.addView(login);
@@ -136,12 +139,14 @@ public class MainActivity extends Activity {
   }
   void authenticate(){
     if(busy)return;
-    final String key=secret.getText().toString().trim();
-    if(key.isEmpty()){toast("Token Owner harus diisi");return;}
+    final String email=ownerEmail.getText().toString().trim();
+    final String password=secret.getText().toString();
+    if(email.isEmpty()||password.isEmpty()){toast("Isi email dan password Owner");return;}
     busy=true;login.setEnabled(false);login.setText("Memverifikasi...");
     new Thread(()->{
       try{
-        sessionToken=key;
+        JSONObject auth=request("/owner/login","POST",new JSONObject().put("email",email).put("password",password),false);
+        sessionToken=auth.getString("access_token");
         JSONObject stats=request("/admin/stats","GET",null,true);
         JSONObject config=request("/admin/config","GET",null,true);
         runOnUiThread(()->{
