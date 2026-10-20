@@ -6,7 +6,7 @@ export type Stage={name:string;changes:number};
 export type EngineResult={result:string;transformations:number;stages:Stage[];patterns:string[];warnings:string[]};
 type Token={text:string;start:number;end:number;kind:"string"|"id"|"number"|"symbol"};
 type Edit={start:number;end:number;replacement:string};
-function lex(source:string):Token[]|null{
+function lex(source:string,onlyStrings=false):Token[]|null{
  const tokens:Token[]=[];let i=0;
  while(i<source.length){
   if(tokens.length>=150000)return null;
@@ -29,6 +29,7 @@ function lex(source:string):Token[]|null{
     tokens.push({text:source.slice(start,i),start,end:i,kind:"string"});continue;
    }
   }
+  if(onlyStrings){i++;continue;}
   if(/[A-Za-z_]/.test(c)){
    i++;while(i<source.length&&/[A-Za-z0-9_]/.test(source[i]))i++;
    tokens.push({text:source.slice(start,i),start,end:i,kind:"id"});continue;
@@ -67,8 +68,8 @@ function unescapeSafe(literal:string):{text:string;changes:number}{
  }
  return{text:q+out+q,changes};
 }
-function escapedLiteralPass(source:string):{result:string;changes:number}{
- const tokens=lex(source);if(!tokens)return{result:source,changes:0};
+function escapedLiteralPass(source:string,onlyStrings=false):{result:string;changes:number}{
+ const tokens=lex(source,onlyStrings);if(!tokens)return{result:source,changes:0};
  const edits:Edit[]=[];let changes=0;
  for(const t of tokens)if(t.kind==="string"){
   const r=unescapeSafe(t.text);if(r.changes){edits.push({start:t.start,end:t.end,replacement:r.text});changes+=r.changes;}
@@ -144,8 +145,11 @@ export function detectPatterns(source:string):string[]{
 export function decodeLua(source:string):EngineResult{
  const stages:Stage[]=[],warnings:string[]=[];let result=source;
  if(source.length>350000){
-  warnings.push("Source besar: tahapan kompleks tidak dijalankan demi stabilitas.");
-  return{result:source,transformations:0,stages,patterns:detectPatterns(source.slice(0,350000)),warnings};
+  // Preserve legacy escaped-string decoding without generating millions of symbol tokens.
+  const r=escapedLiteralPass(source,true);
+  if(r.changes)stages.push({name:"escaped_strings_large",changes:r.changes});
+  warnings.push("Source besar: tahap lanjut dilewati; escaped strings tetap didecode.");
+  return{result:r.result,transformations:r.changes,stages,patterns:detectPatterns(source.slice(0,350000)),warnings};
  }
  for(const [name,run] of [
   ["escaped_strings",escapedLiteralPass],
