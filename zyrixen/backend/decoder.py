@@ -4,12 +4,12 @@ def readable_lua(source):
  """Conservatively decode decimal and hexadecimal Lua string escapes."""
  count=0
  def process(m):
-  global count
+  nonlocal count
   raw=m.group(0)
   quote=raw[0]
   inside=raw[1:-1]
   def dec_escape(x):
-   global count
+   nonlocal count
    val=int(x.group(1),10) if x.group(1) is not None else int(x.group(2),16)
    if val>255:return x.group(0)
    if val in (10,13,34,39,92) or val<32:return x.group(0)
