@@ -76,7 +76,7 @@ public class MainActivity extends Activity {
     TextView brand=label("◈  Z Y R I X E N",16,ZyrixenUi.CYAN,true);put(root,brand,21);
     TextView hero=label("Deobfuscate.\nUnderstand. Build.",29,ZyrixenUi.WHITE,true);
     hero.setLineSpacing(ZyrixenUi.dp(this,4),1);put(root,hero,8);
-    put(root,label("LUA ANALYSIS STUDIO  •  VERSION 0.5",11,ZyrixenUi.MUTED,false),20);
+    put(root,label("LUA ANALYSIS STUDIO  •  VERSION 0.6",11,ZyrixenUi.MUTED,false),20);
 
     LinearLayout online=ZyrixenUi.card(this);
     service=label(api.isEmpty()?"●  MODE OFFLINE":"●  MENYAMBUNG KE SERVER",13,api.isEmpty()?ZyrixenUi.CYAN:ZyrixenUi.MUTED,true);
@@ -181,7 +181,7 @@ public class MainActivity extends Activity {
   }
   private static String preview(String value){
     if(value.length()<=PREVIEW)return value;
-    return value.substring(0,PREVIEW)+"\n\n… CUPlIKAN "+PREVIEW+" karakter. Download menyimpan hasil lengkap ("+value.length()+" karakter).";
+    return value.substring(0,PREVIEW)+"\n\n… CUPLIKAN "+PREVIEW+" karakter. Download menyimpan hasil lengkap ("+value.length()+" karakter).";
   }
   void pasteFromClipboard(){
     new Thread(()->{
