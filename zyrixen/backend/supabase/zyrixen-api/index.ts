@@ -1,3 +1,4 @@
+import { decodeLua, aiAnalyze, type AiReport } from "./engine.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
@@ -76,26 +77,12 @@ async function requireOwner(req: Request) {
   const owner = await adminDb.from("zyrixen_owners").select("user_id").eq("user_id",data.user.id).maybeSingle();
   return owner.data ? data.user : null;
 }
-function decodeLua(source: string): {result:string;transformations:number} {
-  let changes = 0;
-  const result = source.replace(/("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')/g, literal => {
-    const quote = literal[0];
-    const body = literal.slice(1,-1).replace(/\\(?:([0-9]{1,3})|x([0-9a-fA-F]{2}))/g,(raw,decimal,hex) => {
-      const value = decimal ? Number(decimal) : parseInt(hex,16);
-      if (value < 32 || value > 126 || value===34 || value===39 || value===92 || String.fromCharCode(value)===quote) return raw;
-      changes++;
-      return String.fromCharCode(value);
-    });
-    return quote+body+quote;
-  });
-  return {result,transformations:changes};
-}
 Deno.serve(async req => {
   if (req.method === "OPTIONS") return new Response(null, {status:204,headers});
   const path = new URL(req.url).pathname.replace(/^.*\/zyrixen-api(?=\/|$)/,"") || "/";
   try {
-    if (req.method==="GET" && path==="/health") return json({ok:true,service:"Zyrixen Online",version:"0.9"});
-    if (req.method==="GET" && path==="/config") return json({...await config(),engine_version:"0.9",max_source_bytes:8000000});
+    if (req.method==="GET" && path==="/health") return json({ok:true,service:"Zyrixen Online",version:"1.0"});
+    if (req.method==="GET" && path==="/config") return json({...await config(),engine_version:"1.0",max_source_bytes:8000000,ai_available:Deno.env.get("ZYRIXEN_AI_ENABLED")==="true" && !!Deno.env.get("AI_GATEWAY_API_KEY") && !!Deno.env.get("ZYRIXEN_AI_MODEL")});
     if(req.method==="POST" && path==="/user/register"){
       const payload=await readBody(req,2048);
       const username=typeof payload.username==="string"?payload.username.trim():"";
@@ -129,7 +116,8 @@ Deno.serve(async req => {
       if (source.length>cfg.max_chars) return fail("Batas source terlalu besar",413);
       if(typeof requestId!=="string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(requestId))
         return fail("Request ID tidak valid",422);
-      const {result,transformations}=decodeLua(source);
+      const decoded=decodeLua(source);
+      const {result,transformations,stages,patterns,warnings}=decoded;
       const {data:charged,error:chargeError}=await adminDb.rpc("zyrixen_complete_job",{
         p_user_id:user.id,p_request_id:requestId,
         p_source_chars:source.length,p_transformations:transformations,
@@ -144,9 +132,22 @@ Deno.serve(async req => {
         if(reason==="request_id_conflict")return fail("ID permintaan sudah digunakan untuk source berbeda.",409);
         return fail("Akun pengguna tidak tersedia",401);
       }
-      return json({result,transformations,engine_version:"0.9",
+      let ai:AiReport|undefined;
+      if(body.ai===true){
+        if(charged.replayed===true){
+          ai={status:"skipped",caution:"Permintaan ulang tidak memanggil AI lagi."};
+        }else if(Deno.env.get("ZYRIXEN_AI_ENABLED")!=="true" || !Deno.env.get("AI_GATEWAY_API_KEY") || !Deno.env.get("ZYRIXEN_AI_MODEL")){
+          ai={status:"disabled",caution:"AI belum diaktifkan oleh Owner."};
+        }else{
+          const quota=await adminDb.rpc("zyrixen_consume_ai_quota",{p_user_id:user.id});
+          ai=quota.error?{status:"error",caution:"Kuota AI belum tersedia."}
+            :quota.data===true?await aiAnalyze(source,patterns)
+            :{status:"skipped",caution:"Batas AI tercapai: maksimal 2 analisis per jam per akun."};
+        }
+      }
+      return json({result,transformations,engine_version:"1.0",stages,patterns,warnings,ai,
         charged:charged.charged,replayed:charged.replayed===true,credits:charged.credits,unlimited:charged.unlimited,
-        obfuscator:source.includes("PvM Obfuscator")?"PvM":undefined,
+        obfuscator:patterns[0]??undefined,
         note:charged.replayed===true?"Permintaan ulang: tidak ada kredit tambahan yang dipotong.":transformations===0?"Tidak ada transformasi: kredit tidak dipotong. Mesin belum mendukung obfuscation ini.":charged.charged===0?"Berhasil diproses dengan unlimited kredit.":"Sukses diproses. Satu kredit digunakan."});
     }
     if (req.method==="POST" && path==="/owner/login") {
