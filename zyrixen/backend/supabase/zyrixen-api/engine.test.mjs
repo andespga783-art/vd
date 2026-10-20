@@ -11,6 +11,7 @@ const cases=[
  ["join",'return "Z" .. \'Y\' .. "X"','return "ZYX"',2],
  ["reverse",'return string.reverse("cba")','return "abc"',1],
  ["reverse_shadow",'local string={} return string.reverse("abc")','local string={} return string.reverse("abc")',0],
+ ["reverse_overridden",'string.reverse=function(s) return s end; return string.reverse("abc")','string.reverse=function(s) return s end; return string.reverse("abc")',0],
  ["table_join",'return table.concat({"A","B","C"})','return "ABC"',1],
  ["table_separator",'return table.concat({"A","B","C"},"-")','return "A-B-C"',1],
  ["table_dynamic",'return table.concat({someVariable,"X"})','return table.concat({someVariable,"X"})',0],
