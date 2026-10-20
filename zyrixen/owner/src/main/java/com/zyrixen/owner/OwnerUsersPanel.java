@@ -62,13 +62,13 @@ public final class OwnerUsersPanel {
     activity.runOnUiThread(()->Toast.makeText(activity,message,Toast.LENGTH_LONG).show());
   }
   public void load(){
-    if(activity.sessionToken.isEmpty()||!updating.compareAndSet(false,true))return;
+    if(!activity.hasOwnerSession()||!updating.compareAndSet(false,true))return;
     status.setText("Memuat data pengguna...");
     final int requestedPage=page;
     String keyword=search.getText().toString().trim();
     new Thread(()->{
       try{
-        String query=URLEncoder.encode(keyword, StandardCharsets.UTF_8.name());
+        String query=URLEncoder.encode(keyword, "UTF-8");
         JSONObject data=activity.authenticatedRequest("/admin/users?page="+requestedPage+"&q="+query,"GET",null);
         activity.runOnUiThread(()->render(data));
       }catch(Exception e){alert("Gagal memuat pengguna: "+e.getMessage());}
