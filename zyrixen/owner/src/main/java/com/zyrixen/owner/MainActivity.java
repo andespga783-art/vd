@@ -23,7 +23,7 @@ import java.nio.charset.StandardCharsets;
 
 public class MainActivity extends Activity {
   private final String api=BuildConfig.BACKEND_URL.trim().replaceAll("/+$","");
-  private String sessionToken="";
+  private volatile String sessionToken="";
   private LinearLayout root, signIn, admin;
   private TextView server, serverDesc, jobs, characters, lastAction;
   private EditText ownerEmail, secret, notice, limit;
@@ -50,7 +50,7 @@ public class MainActivity extends Activity {
 
     TextView brand=text("◈  Z Y R I X E N",16,ZyrixenUi.CYAN,true);add(root,brand,21);
     add(root,text("Owner Control",29,ZyrixenUi.WHITE,true),7);
-    add(root,text("CONTROL CENTER  •  VERSION 0.4",11,ZyrixenUi.MUTED,false),22);
+    add(root,text("CONTROL CENTER  •  VERSION 0.5",11,ZyrixenUi.MUTED,false),22);
 
     LinearLayout serverCard=ZyrixenUi.card(this);
     server=text(api.isEmpty()?"●  SERVER BELUM TERHUBUNG":"●  MENGHUBUNGKAN...",13,ZyrixenUi.MUTED,true);
@@ -60,7 +60,7 @@ public class MainActivity extends Activity {
 
     signIn=ZyrixenUi.card(this);
     add(signIn,text("OWNER ACCESS",16,ZyrixenUi.WHITE,true),7);
-    add(signIn,text("Panel ini hanya untuk pemilik Zyrixen. Masuk menggunakan akun Owner Zyrixen yang terverifikasi.",12,ZyrixenUi.MUTED,false),14);
+    add(signIn,text("Aktivasi akun Owner di perangkat ini hanya sekali. Berikutnya masuk otomatis dan aman.",12,ZyrixenUi.MUTED,false),14);
     ownerEmail=ZyrixenUi.edit(this,"Email Owner",1);
     ownerEmail.setSingleLine(true);ownerEmail.setInputType(InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
     add(signIn,ownerEmail,13);
@@ -69,7 +69,7 @@ public class MainActivity extends Activity {
     add(signIn,secret,13);
     login=ZyrixenUi.button(this,"↗  Masuk sebagai Owner",true);signIn.addView(login);
     login.setOnClickListener(v->authenticate());
-    add(root,signIn,18);
+    add(root,signIn,18);signIn.setVisibility(View.GONE);
 
     admin=ZyrixenUi.vertical(this);
     TextView title=text("OVERVIEW",12,ZyrixenUi.MUTED,true);add(admin,title,10);
@@ -99,7 +99,7 @@ public class MainActivity extends Activity {
     notice=ZyrixenUi.edit(this,"Pengumuman untuk pengguna Zyrixen",3);add(settings,notice,17);
     add(settings,text("BATAS INPUT (KARAKTER)",11,ZyrixenUi.MUTED,true),9);
     limit=ZyrixenUi.edit(this,"100000",1);limit.setSingleLine(true);limit.setInputType(InputType.TYPE_CLASS_NUMBER);
-    limit.setText("100000");add(settings,limit,19);
+    limit.setText("3000000");add(settings,limit,19);
     save=ZyrixenUi.button(this,"✓  Simpan Pengaturan",true);add(settings,save,12);
     save.setOnClickListener(v->saveSettings());
     lastAction=text("Menunggu aktivitas Owner.",12,ZyrixenUi.MUTED,false);settings.addView(lastAction);
@@ -107,7 +107,11 @@ public class MainActivity extends Activity {
     Button reload=ZyrixenUi.button(this,"↻  Refresh Dashboard",false);add(admin,reload,10);
     reload.setOnClickListener(v->refresh());
     Button logout=ZyrixenUi.button(this,"Keluar dari Owner",false);add(admin,logout,17);
-    logout.setOnClickListener(v->{sessionToken="";secret.setText("");signIn.setVisibility(View.VISIBLE);admin.setVisibility(View.GONE);});
+    logout.setOnClickListener(v->{
+      sessionToken="";OwnerSession.clear(this);secret.setText("");
+      signIn.setVisibility(View.VISIBLE);admin.setVisibility(View.GONE);
+      serverDesc.setText("Perangkat keluar dari akun Owner.");
+    });
     TextView foot=text("ZYRIXEN  •  SECURED OWNER PANEL",11,ZyrixenUi.MUTED,true);
     foot.setGravity(Gravity.CENTER);admin.addView(foot);
     add(root,admin,0);admin.setVisibility(View.GONE);
@@ -117,6 +121,7 @@ public class MainActivity extends Activity {
       }catch(Exception e){status("●  SERVER TIDAK TERJANGKAU",ZyrixenUi.RED);
        runOnUiThread(()->serverDesc.setText("Periksa koneksi internet atau tunggu server aktif."));}
     }).start();
+    resumeSession();
   }
   JSONObject request(String path,String method,JSONObject payload,boolean owner)throws Exception{
     if(!api.startsWith("https://"))throw new Exception("Server Zyrixen belum tersedia");
@@ -137,6 +142,44 @@ public class MainActivity extends Activity {
       }
     }finally{c.disconnect();}
   }
+  JSONObject authenticatedRequest(String path,String method,JSONObject payload)throws Exception {
+    try{return request(path,method,payload,true);}
+    catch(Exception error){
+      if(!error.getMessage().startsWith("HTTP 401"))throw error;
+      String previous=OwnerSession.load(this);
+      if(previous==null)throw new Exception("Sesi Owner habis. Aktifkan kembali.");
+      JSONObject renewed=request("/owner/refresh","POST",new JSONObject().put("refresh_token",previous),false);
+      sessionToken=renewed.getString("access_token");
+      OwnerSession.save(this,renewed.getString("refresh_token"));
+      return request(path,method,payload,true);
+    }
+  }
+  void resumeSession(){
+    String token=OwnerSession.load(this);
+    if(token==null){signIn.setVisibility(View.VISIBLE);return;}
+    serverDesc.setText("Menghubungkan Owner otomatis...");
+    new Thread(()->{
+      try{
+        JSONObject renewed=request("/owner/refresh","POST",new JSONObject().put("refresh_token",token),false);
+        sessionToken=renewed.getString("access_token");
+        OwnerSession.save(this,renewed.getString("refresh_token"));
+        JSONObject stats=authenticatedRequest("/admin/stats","GET",null);
+        JSONObject cfg=authenticatedRequest("/admin/config","GET",null);
+        runOnUiThread(()->{
+          render(stats,cfg);signIn.setVisibility(View.GONE);admin.setVisibility(View.VISIBLE);
+          server.setText("●  OWNER OTOMATIS TERHUBUNG");
+          server.setTextColor(ZyrixenUi.CYAN);
+          serverDesc.setText("Perangkat ini sudah teraktivasi.");
+        });
+      }catch(Exception e){
+        OwnerSession.clear(this);sessionToken="";
+        runOnUiThread(()->{
+          signIn.setVisibility(View.VISIBLE);admin.setVisibility(View.GONE);
+          serverDesc.setText("Aktivasi diperlukan lagi bila sesi kedaluwarsa.");
+        });
+      }
+    }).start();
+  }
   void authenticate(){
     if(busy)return;
     final String email=ownerEmail.getText().toString().trim();
@@ -147,8 +190,9 @@ public class MainActivity extends Activity {
       try{
         JSONObject auth=request("/owner/login","POST",new JSONObject().put("email",email).put("password",password),false);
         sessionToken=auth.getString("access_token");
-        JSONObject stats=request("/admin/stats","GET",null,true);
-        JSONObject config=request("/admin/config","GET",null,true);
+        JSONObject stats=authenticatedRequest("/admin/stats","GET",null);
+        JSONObject config=authenticatedRequest("/admin/config","GET",null);
+        OwnerSession.save(this,auth.getString("refresh_token"));
         runOnUiThread(()->{
           render(stats,config);signIn.setVisibility(View.GONE);admin.setVisibility(View.VISIBLE);
           server.setText("●  OWNER TERHUBUNG");server.setTextColor(ZyrixenUi.CYAN);
@@ -165,14 +209,14 @@ public class MainActivity extends Activity {
     enabled.setChecked(config.optInt("enabled",1)!=0);
     maintenance.setChecked(config.optInt("maintenance",0)!=0);
     notice.setText(config.optString("notice",""));
-    limit.setText(String.valueOf(config.optInt("max_chars",100000)));
+    limit.setText(String.valueOf(config.optInt("max_chars",3000000)));
   }
   void refresh(){
     if(busy||sessionToken.isEmpty())return;busy=true;
     new Thread(()->{
       try{
-        JSONObject stats=request("/admin/stats","GET",null,true);
-        JSONObject config=request("/admin/config","GET",null,true);
+        JSONObject stats=authenticatedRequest("/admin/stats","GET",null);
+        JSONObject config=authenticatedRequest("/admin/config","GET",null);
         runOnUiThread(()->{render(stats,config);lastAction.setText("Data terbaru berhasil dimuat.");});
       }catch(Exception e){toast("Refresh gagal: "+e.getMessage());}
       finally{busy=false;}
@@ -183,13 +227,13 @@ public class MainActivity extends Activity {
     final boolean on=enabled.isChecked(),maint=maintenance.isChecked();
     final String ann=notice.getText().toString();
     final int max;
-    try{max=Integer.parseInt(limit.getText().toString());if(max<100||max>500000)throw new Exception("Batas 100–500000");}
-    catch(Exception e){toast("Batas karakter harus 100–500000");return;}
+    try{max=Integer.parseInt(limit.getText().toString());if(max<100||max>5000000)throw new Exception("Batas 100–5000000");}
+    catch(Exception e){toast("Batas karakter harus 100–5000000");return;}
     busy=true;save.setEnabled(false);save.setText("Menyimpan...");
     new Thread(()->{
       try{
         JSONObject params=new JSONObject().put("enabled",on).put("maintenance",maint).put("notice",ann).put("max_chars",max);
-        JSONObject c=request("/admin/config","PUT",params,true);
+        JSONObject c=authenticatedRequest("/admin/config","PUT",params);
         runOnUiThread(()->{lastAction.setText("✓  Pengaturan disimpan ke server.");notice.setText(c.optString("notice",ann));});
       }catch(Exception e){toast("Gagal simpan: "+e.getMessage());}
       finally{busy=false;runOnUiThread(()->{save.setEnabled(true);save.setText("✓  Simpan Pengaturan");});}
