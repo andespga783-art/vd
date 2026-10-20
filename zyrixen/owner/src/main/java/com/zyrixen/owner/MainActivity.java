@@ -15,7 +15,7 @@ public class MainActivity extends Activity {
  void work(Task job){new Thread(()->{try{job.run();}catch(Exception e){toast(e.getMessage());}}).start();}
  public void onCreate(Bundle b){super.onCreate(b);ScrollView sc=new ScrollView(this);layout=new LinearLayout(this);layout.setPadding(24,24,24,24);layout.setOrientation(1);sc.addView(layout);setContentView(sc);TextView title=new TextView(this);title.setText("ZYRIXEN OWNER PANEL");title.setTextSize(23);layout.addView(title);
  url=field("Backend HTTPS");token=field("Owner token");token.setInputType(129);notice=field("Pengumuman");limit=field("Batas karakter");limit.setText("100000");active=new CheckBox(this);active.setText("Deobfuscator aktif");active.setChecked(true);layout.addView(active);maintenance=new CheckBox(this);maintenance.setText("Mode maintenance");layout.addView(maintenance);info=new TextView(this);layout.addView(info);
- button("Lihat statistik",()->work(()->{JSONObject j=request("/admin/stats","GET",null);runOnUiThread(()->info.setText(j.toString(2)));}));
+ button("Lihat statistik",()->work(()->{JSONObject j=request("/admin/stats","GET",null);String formatted=j.toString(2);runOnUiThread(()->info.setText(formatted));}));
  button("Simpan konfigurasi",()->work(()->{JSONObject body=new JSONObject();body.put("enabled",active.isChecked());body.put("maintenance",maintenance.isChecked());body.put("notice",notice.getText().toString());if(!limit.getText().toString().isEmpty())body.put("max_chars",Integer.parseInt(limit.getText().toString()));JSONObject j=request("/admin/config","PUT",body);runOnUiThread(()->info.setText(j.toString()));toast("Tersimpan");}));
  }
 }
