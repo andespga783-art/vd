@@ -1,0 +1,37 @@
+name: Restore Fallens v207 Lua artifact
+on:
+  push:
+    paths:
+      - '.github/workflows/zyrixen-v207-one-time.yml'
+permissions:
+  contents: write
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Reconstruct and verify exact archived Lua
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, lzma, hashlib
+          root = Path('zyrixen-temp')
+          encoded = ''.join((root / f'v207-compressed-{i:02d}.txt').read_text().strip() for i in range(10))
+          raw = lzma.decompress(base64.b64decode(encoded))
+          assert len(raw) == 645962, f'Incorrect size: {len(raw)}'
+          assert hashlib.sha256(raw).hexdigest() == '526ff13b8fa3d4c6aa4851d68c7b2bf8a15bc01d0a700702acae0ed734d99c7b'
+          output = Path('zyrixen/Fallens_VD_deobsefactor_by_zyrixen_v207_PARTIAL.lua')
+          output.parent.mkdir(parents=True, exist_ok=True)
+          assert not output.exists(), 'Refusing overwrite'
+          output.write_bytes(raw)
+          print(f'OK {output}: {len(raw)} bytes')
+          PY
+      - name: Commit exact Lua file
+        run: |
+          git config user.name "zyrixen-artifact"
+          git config user.email "zyrixen-artifact@users.noreply.github.com"
+          git add -- zyrixen/Fallens_VD_deobsefactor_by_zyrixen_v207_PARTIAL.lua
+          git commit -m "Restore verified Fallens VD v207 partial Lua"
+          git push origin HEAD:main
