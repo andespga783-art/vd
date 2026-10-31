@@ -675,7 +675,7 @@ else if 133>iD then if 127<iD then if iD<130 then if not(iD>=129)then if 128~=iD
 end;
 else j+=231;
 end;
-else if iD>130 then if 132>iD then if sN==iD then Q[2910]=31685;j=j+C+45end;
+else if iD>130 then if 132>iD then if sN==iD then Q[2910]=31685;j=j+C+45 end;
 else Q[416]=1226;j-=27;
 end;
 else O[57]={o,CF,qj,Qq,wL,yu,wJ}j-=53;
@@ -1581,7 +1581,7 @@ else j-=154;
 end;
 end;
 elseif iD<255 then if 252>iD then if iD<250 then if 249~=iD then else for w=g+Sk,#y do Zu[w-G-Sk]=y[w]end;
-j=j-kj+69end;
+j=j-kj+69 end;
 else if 250<iD then if 251~=iD then else j+=81;
 end;
 else local l=yn;
