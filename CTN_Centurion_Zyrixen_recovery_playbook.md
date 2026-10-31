@@ -11,3 +11,5 @@ Artifacts (branch zyrixen-dameungrhub-recovery):
 - Dameungrhub_Whitelist_LAYER2_deobsefactor_by_zyrixen.lua
 Validation: static payload decode succeeds to the expected length. Layer2 was not compiled nor differentially tested under Luau. Remaining: full CFG reconstruction, branch reassembly, function naming, Roblox runtime parity. Avoid claims of full recovery.
 Runtime strategy: only use isolated Docker, no network, non-root if available, bounded CPU/memory and no secrets, intercept loadstring; do not execute untrusted protected payload in production.
+
+Layer3 checkpoint (2026-10-31): `Dameungrhub_Whitelist_deobsefactor_by_zyrixen.lua`. Repaired 44 malformed numeric-token merges in Layer2 plus 2 new ones after jump folding. Recovered jump bytes y[57545]=45 and y[43239]=69; renamed 3 uses of `pE` to `decodeBase85`. Balanced delimiter and quote check passes (not a formal Luau parser). 281 state comparison sites remain, flattened VM not reconstructed. Saved in GitHub branch; current file is partial and not runtime-tested.
