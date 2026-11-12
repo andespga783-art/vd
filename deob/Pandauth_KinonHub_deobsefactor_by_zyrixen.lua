@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 260421)
-Total output lines: 26945
-
 -- deobsefactor by zeyrixen
 local function runEmbeddedKinonHub(...)
 if type(_G.KinonHubBetaUnload) == "function" then pcall(_G.KinonHubBetaUnload) end
@@ -3165,7 +3162,20678 @@ State.PumpkinFarmObj = (function()
 
 		local char = LP.Character
 		local hrp = char and char:FindFirstChild("HumanoidRootPart")
-		local humanoid = char and char:F…210421 tokens truncated…   closeCapturedValues(captureGroups, values, 0)
+		local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+		if not (char and hrp and humanoid and humanoid.Health > 0 and teamHas("survivor") and not isSpectating()) then
+			resetState()
+			return
+		end
+
+		if S.FleeKiller then
+			local d = nearestKillerDistance()
+			if d and d <= S.FleeDistance then
+				setStatus("PUMPKIN (KILLER NEAR)")
+				hardStop(humanoid, hrp)
+				resetState()
+				task.wait(0.5)
+				return
+			end
+		end
+
+		local now = tick()
+		local list, seen = {}, {}
+		local function addPumpkin(o)
+			if o and o.Parent and o:IsDescendantOf(workspace) and not seen[o] then
+				if not (items[o] and now < items[o]) and getHitboxPart(o) then
+					seen[o] = true
+					table.insert(list, o)
+				end
+			end
+		end
+
+		local world = State.WorldESPObj
+		local cache = world and world.Cache.Pumpkins
+		if world and (not cache or #cache == 0) then
+			pcall(function() world:_scan(false) end)
+			cache = world.Cache.Pumpkins
+		end
+		for _, p in ipairs(cache or {}) do addPumpkin(p) end
+		local map = workspace:FindFirstChild("Map")
+		local folder = map and map:FindFirstChild("Pumpkins")
+		if folder then
+			for _, c in ipairs(folder:GetChildren()) do addPumpkin(c) end
+		end
+
+		if #list == 0 then
+			setStatus("ALL PUMPKINS CRUSHED")
+			resetState()
+			return
+		end
+
+		local chosen, chosenPart, best = nil, nil, math.huge
+		if currentTarget and currentTarget.Parent and seen[currentTarget] then
+			local part = getHitboxPart(currentTarget)
+			if part then
+				chosen, chosenPart = currentTarget, part
+				best = (part.Position - hrp.Position).Magnitude
+			end
+		end
+		if not chosen then
+			local cands = {}
+			for _, o in ipairs(list) do
+				local part = getHitboxPart(o)
+				if part then
+					table.insert(cands, { o = o, part = part, d = (part.Position - hrp.Position).Magnitude })
+				end
+			end
+			table.sort(cands, function(a, b) return a.d < b.d end)
+			local bestScore = math.huge
+			for i = 1, math.min(3, #cands) do
+				local c = cands[i]
+				local _, len = computePath(hrp, c.part.Position)
+				local score = len or (c.d * 4 + 200)
+				if score < bestScore then bestScore, best, chosen, chosenPart = score, c.d, c.o, c.part end
+			end
+			if not chosen and cands[1] then best, chosen, chosenPart = cands[1].d, cands[1].o, cands[1].part end
+		end
+		if not (chosen and chosenPart) then return end
+
+		currentTarget = chosen
+		setStatus("PUMPKIN (" .. #list .. " LEFT)")
+		local destPos = chosenPart.Position + Vector3.new(0, 1.5, 0)
+		local dist = (chosenPart.Position - hrp.Position).Magnitude
+
+		if not isCrushing and dist > 4.5 then
+			local ps = pathState
+			local goalPos = chosenPart.Position
+			local needNew = (not ps.wps) or (not ps.goal) or (goalPos - ps.goal).Magnitude > 6 or now - ps.at > 2.5
+			if needNew and now - ps.lastTry > 0.6 then
+				ps.lastTry = now
+				local wps = computePath(hrp, goalPos)
+				if wps then
+					ps.wps, ps.idx, ps.goal, ps.at, ps.fails = wps, 2, goalPos, tick(), 0
+				else
+					ps.wps = nil
+					ps.fails = ps.fails + 1
+					if ps.fails >= 4 then
+
+						items[chosen] = tick() + 20
+						currentTarget = nil
+						ps.fails = 0
+						clearPath()
+						return
+					end
+				end
+			end
+			local wps = ps.wps
+			if not wps then
+				humanoid:MoveTo(hrp.Position)
+			else
+				local wp = wps[ps.idx]
+				while wp and Vector3.new(hrp.Position.X - wp.Position.X, 0, hrp.Position.Z - wp.Position.Z).Magnitude < 2.2 do
+					ps.idx = ps.idx + 1
+					wp = wps[ps.idx]
+				end
+				if not wp then
+					clearPath()
+				else
+					if wp.Action == Enum.PathWaypointAction.Jump then humanoid.Jump = true end
+					humanoid:MoveTo(wp.Position)
+
+					if stuckPos == nil or (hrp.Position - stuckPos).Magnitude > 1.2 then
+						stuckPos, stuckAt = hrp.Position, now
+					elseif now - stuckAt > 1.0 then
+						humanoid.Jump = true
+						clearPath()
+						stuckAt = now
+					end
+				end
+			end
+		elseif not isCrushing then
+			smoothMove(humanoid, hrp.Position)
+		end
+
+		if dist <= 7 and chosen.Parent then
+			isCrushing = true
+			hardStop(humanoid, hrp)
+			lastDest = nil
+			task.wait(0.15)
+
+			local crushRemote = getCrushRemote()
+			local crushTarget = getCrushTarget(chosen)
+			local tries, crushed = 0, false
+
+			while tries < 3 and chosen.Parent and chosen:IsDescendantOf(workspace) and S.Enabled do
+				tries = tries + 1
+				hardStop(humanoid, hrp)
+				if crushRemote then
+					pcall(function() crushRemote:FireServer(crushTarget) end)
+				end
+				pcall(function()
+					local pg = LP:FindFirstChildOfClass("PlayerGui")
+					local pcp = pg and pg:FindFirstChild("pcprompts")
+					local f = pcp and pcp:FindFirstChild("Frame")
+					local stomp = f and f:FindFirstChild("pumpkinstomp")
+					if stomp and stomp.Visible then
+						VIM:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+						task.wait(0.05)
+						VIM:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+					end
+				end)
+				task.wait(0.35)
+				hardStop(humanoid, hrp)
+				if not chosen.Parent or not chosen:IsDescendantOf(workspace) then
+					crushed = true
+					break
+				end
+			end
+
+			isCrushing = false
+			if not crushed and chosen.Parent then
+				items[chosen] = tick() + 15
+			else
+				if cache then
+					local idx = table.find(cache, chosen)
+					if idx then table.remove(cache, idx) end
+				end
+				resetState()
+			end
+		end
+	end
+
+	task.spawn(function()
+		while not unloaded do
+			task.wait(0.15)
+			if S.Enabled then
+				local ok, err = pcall(step)
+				if not ok then warn("[" .. HUB_NAME .. "] Auto Pumpkin error: " .. tostring(err)) end
+			else
+				resetState()
+			end
+		end
+	end)
+
+	function obj:Halt()
+		resetState()
+		setStatus("OFF")
+		local char = LP.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+		if hrp and humanoid then hardStop(humanoid, hrp) end
+	end
+
+	function obj:Shutdown()
+		S.Enabled, S.AutoRun = false, false
+		releaseShift()
+		self:Halt()
+	end
+
+	return obj
+end)()
+
+State.SkillCheckObj = (function()
+	local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+	local GuiService          = game:GetService("GuiService")
+	local VirtualInputManager = game:GetService("VirtualInputManager")
+
+	local PlayerGui = LP:FindFirstChildOfClass("PlayerGui") or LP:WaitForChild("PlayerGui")
+
+	local DEFAULT_CFG = {
+		Enabled = false,
+		Mode = "Legit",
+		BusyResetDelay = 0.05,
+		InstantOffset = 109,
+		LegitMinOffset = 102, LegitMaxOffset = 116,
+		NormalMinOffset = 116, NormalMaxOffset = 140,
+	}
+
+	local Class = {}
+	Class.__index = Class
+
+	function Class.new()
+		local self = setmetatable({}, Class)
+		self.Settings = table.clone(DEFAULT_CFG)
+		self._busy = false
+		self._randomModeIsNormal = false
+		self._heartbeat = nil
+		self._kingConn = nil
+		self.Stats = { Hits = 0, Missed = 0 }
+		return self
+	end
+
+	function Class:_getActionButton()
+		local mob = PlayerGui:FindFirstChild("Survivor-mob")
+		if not mob then return nil end
+		local controls = mob:FindFirstChild("Controls")
+		if not controls then return nil end
+		return controls:FindFirstChild("action") or controls:FindFirstChild("check")
+	end
+
+	function Class:_fireAction()
+		local btn = self:_getActionButton()
+
+		if btn and btn:IsA("GuiObject") and btn.Visible and type(firesignal) == "function" then
+			local ok = pcall(function()
+				firesignal(btn.MouseButton1Down)
+				task.wait(0.005)
+				firesignal(btn.MouseButton1Up)
+			end)
+			if ok then return true end
+		end
+
+		if btn and btn:IsA("GuiObject") and btn.Visible then
+			local ok = pcall(function()
+				local ap, as = btn.AbsolutePosition, btn.AbsoluteSize
+				local inset = GuiService:GetGuiInset()
+				local id = 8822 + math.random(1, 9999)
+				local x = ap.X + as.X / 2 + inset.X
+				local y = ap.Y + as.Y / 2 + inset.Y
+				VirtualInputManager:SendTouchEvent(id, 0, x, y)
+				task.wait(0.005)
+				VirtualInputManager:SendTouchEvent(id, 2, x, y)
+			end)
+			if ok then return true end
+		end
+
+		pcall(function()
+			VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+			task.wait(0.005)
+			VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+		end)
+		return true
+	end
+
+	function Class:_inAngleRange(lineRot, goalRot, minOff, maxOff)
+		local minA = (goalRot + minOff) % 360
+		local maxA = (goalRot + maxOff) % 360
+		if maxA < minA then
+			return minA <= lineRot or lineRot <= maxA
+		end
+		return minA <= lineRot and lineRot <= maxA
+	end
+
+	function Class:_shouldFireByRange(lineRot, goalRot)
+		local S = self.Settings
+		local m = S.Mode
+		if m == "Normal" then
+			return self:_inAngleRange(lineRot, goalRot, S.NormalMinOffset, S.NormalMaxOffset)
+		end
+		return self:_inAngleRange(lineRot, goalRot, S.LegitMinOffset, S.LegitMaxOffset)
+	end
+
+	function Class:_onHeartbeat()
+		if not self.Settings.Enabled or self._busy then return end
+
+		local scGui = PlayerGui:FindFirstChild("SkillCheckPromptGui")
+		if not scGui then return end
+
+		local check = scGui:FindFirstChild("Check")
+		if not check or not check.Visible then
+			self._randomModeIsNormal = false
+			return
+		end
+
+		local line = check:FindFirstChild("Line")
+		local goal = check:FindFirstChild("Goal")
+		if not line or not goal then return end
+		local trapA = check:FindFirstChild("TrapPerfect")
+		local trapB = check:FindFirstChild("TrapGoal")
+		if (trapA and trapA.Visible) or (trapB and trapB.Visible) then return end
+
+		local fireNow = self:_shouldFireByRange(line.Rotation % 360, goal.Rotation % 360)
+
+		if not fireNow then return end
+
+		self._busy = true
+		task.spawn(function()
+			local ok = pcall(function() self:_fireAction() end)
+			if ok then
+				self.Stats.Hits = self.Stats.Hits + 1
+			else
+				self.Stats.Missed = self.Stats.Missed + 1
+			end
+			task.wait(self.Settings.BusyResetDelay)
+			self._busy = false
+		end)
+	end
+
+	function Class:_hookKingScourge()
+		task.spawn(function()
+			pcall(function()
+				local remotes = ReplicatedStorage:WaitForChild("Remotes", 10)
+				if not remotes then return end
+				local perks = remotes:WaitForChild("KillerPerks", 5)
+				if not perks then return end
+				local ks = perks:WaitForChild("kingscourge", 5)
+				if not ks then return end
+				local start = ks:WaitForChild("KingScourgeStart", 5)
+				if not start then return end
+
+				if self._kingConn then self._kingConn:Disconnect() end
+				self._kingConn = start.OnClientEvent:Connect(function() end)
+			end)
+		end)
+	end
+
+	function Class:Start()
+		self.Settings.Enabled = true
+		if self._heartbeat then return end
+		self:_hookKingScourge()
+		self._heartbeat = RunService.Heartbeat:Connect(function()
+			if unloaded then return end
+			pcall(function() self:_onHeartbeat() end)
+		end)
+	end
+
+	function Class:Stop()
+		self.Settings.Enabled = false
+		if self._heartbeat then
+			self._heartbeat:Disconnect()
+			self._heartbeat = nil
+		end
+		if self._kingConn then
+			self._kingConn:Disconnect()
+			self._kingConn = nil
+		end
+		self._busy = false
+		self._randomModeIsNormal = false
+	end
+
+	function Class:SetMode(mode)
+		local valid = { Legit = true, Normal = true }
+		if not valid[mode] then return false end
+		self.Settings.Mode = mode
+		self._randomModeIsNormal = false
+		return true
+	end
+
+	return Class.new()
+end)()
+
+
+State.SkillCheck = State.SkillCheckObj.Settings
+Hooks.SkillCheck = function(s)
+	if s.Enabled then State.SkillCheckObj:Start() else State.SkillCheckObj:Stop() end
+end
+
+State.AutoPumpkin = State.PumpkinFarmObj.Settings
+Hooks.AutoPumpkin = function(s)
+	if not s.Enabled then State.PumpkinFarmObj:Halt() end
+end
+
+State.CameraSettings = {
+	Enabled = false,
+	ZoomOn = true, Zoom = 1000,
+	FOVOn = false, FOV = 70,
+	StiffOn = false, Stiff = 3,
+	StretchOn = false, Stretch = 5,
+}
+
+State.CameraObj = (function()
+	local S = State.CameraSettings
+	local M = {
+		OriginalFOV = nil, OriginalZoom = nil, OriginalMinZoom = nil,
+		StiffnessFocus = nil, Dead = false,
+		_fovCam = nil, _fovConn = nil, _bound = false,
+	}
+
+	local function wantZoom() return S.Enabled and S.ZoomOn end
+	local function wantFOV() return S.Enabled and S.FOVOn end
+	local function wantStiff() return S.Enabled and S.StiffOn end
+	local function wantStretch() return S.Enabled and S.StretchOn end
+
+	local function applyZoom()
+		if wantZoom() then
+			if M.OriginalZoom == nil then
+				M.OriginalZoom = LP.CameraMaxZoomDistance
+				M.OriginalMinZoom = LP.CameraMinZoomDistance
+			end
+			local z = math.clamp(tonumber(S.Zoom) or 1000, 50, 100000)
+			if LP.CameraMaxZoomDistance ~= z then LP.CameraMaxZoomDistance = z end
+		elseif M.OriginalZoom ~= nil then
+			LP.CameraMaxZoomDistance = M.OriginalZoom
+			M.OriginalZoom, M.OriginalMinZoom = nil, nil
+		end
+	end
+
+	local function applyFOV()
+		local cam = workspace.CurrentCamera
+		if not cam then return end
+		if wantFOV() then
+			if M.OriginalFOV == nil then M.OriginalFOV = cam.FieldOfView end
+			local f = math.clamp(tonumber(S.FOV) or 70, 1, 120)
+			if cam.FieldOfView ~= f then cam.FieldOfView = f end
+		elseif M.OriginalFOV ~= nil then
+			cam.FieldOfView = M.OriginalFOV
+			M.OriginalFOV = nil
+		end
+	end
+
+	local function watchCamera()
+		local cam = workspace.CurrentCamera
+		if cam == M._fovCam then return end
+		if M._fovConn then pcall(function() M._fovConn:Disconnect() end); M._fovConn = nil end
+		M._fovCam = cam
+		if cam then
+			M._fovConn = cam:GetPropertyChangedSignal("FieldOfView"):Connect(function()
+				if M.Dead or not wantFOV() then return end
+				pcall(applyFOV)
+			end)
+		end
+	end
+
+	local function stepStiffness(dt)
+		if not wantStiff() then M.StiffnessFocus = nil; return end
+		local cam = workspace.CurrentCamera
+		local char = LP.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local root = char and char:FindFirstChild("HumanoidRootPart")
+		if not cam or not hum or not root or hum.Health <= 0 then M.StiffnessFocus = nil; return end
+		local focus = root.Position
+		local smooth = M.StiffnessFocus
+		if not smooth or (smooth - focus).Magnitude > 20 then
+			M.StiffnessFocus = focus
+			return
+		end
+		local level = math.clamp(tonumber(S.Stiff) or 3, 1, 10)
+		local tau = 0.04 + (level ^ 1.6) * 0.03
+		smooth = smooth:Lerp(focus, 1 - math.exp(-dt / tau))
+		local lag = focus - smooth
+		if lag.Magnitude > 10 then smooth = focus - lag.Unit * 10 end
+		M.StiffnessFocus = smooth
+		local c = cam.CFrame
+		cam.CFrame = CFrame.new(smooth + (c.Position - focus)) * (c - c.Position)
+	end
+
+	local function stepStretch()
+		if not wantStretch() then return end
+		local cam = workspace.CurrentCamera
+		if not cam then return end
+		local lv = math.clamp(tonumber(S.Stretch) or 5, 1, 10)
+		local amount = 0.40 + ((lv - 1) / 9) * 0.60
+		cam.CFrame = cam.CFrame * CFrame.new(0, 0, 0, 1, 0, 0, 0, amount, 0, 0, 0, 1)
+	end
+
+	local function bind()
+		if M._bound then return end
+		M._bound = true
+		pcall(function() RunService:UnbindFromRenderStep("Kinon_CameraStiffness") end)
+		pcall(function() RunService:UnbindFromRenderStep("Kinon_CameraStretch") end)
+		pcall(function() RunService:UnbindFromRenderStep("Kinon_CameraFOV") end)
+		RunService:BindToRenderStep("Kinon_CameraStiffness", Enum.RenderPriority.Last.Value, function(dt)
+			if M.Dead then return end
+			pcall(stepStiffness, dt)
+		end)
+		RunService:BindToRenderStep("Kinon_CameraStretch", Enum.RenderPriority.Last.Value + 1, function()
+			if M.Dead then return end
+			pcall(stepStretch)
+		end)
+		RunService:BindToRenderStep("Kinon_CameraFOV", Enum.RenderPriority.Last.Value + 2, function()
+			if M.Dead then return end
+			pcall(watchCamera)
+			pcall(applyFOV)
+			pcall(applyZoom)
+		end)
+	end
+
+	function M:Sync()
+		if self.Dead then return end
+		bind()
+		pcall(applyZoom)
+		pcall(applyFOV)
+		if not wantStiff() then self.StiffnessFocus = nil end
+	end
+
+	function M:Destroy()
+		self.Dead = true
+		S.Enabled = false
+		pcall(applyZoom)
+		pcall(applyFOV)
+		if self._fovConn then pcall(function() self._fovConn:Disconnect() end); self._fovConn = nil end
+		pcall(function() RunService:UnbindFromRenderStep("Kinon_CameraStiffness") end)
+		pcall(function() RunService:UnbindFromRenderStep("Kinon_CameraStretch") end)
+		pcall(function() RunService:UnbindFromRenderStep("Kinon_CameraFOV") end)
+		self._bound = false
+	end
+
+	return M
+end)()
+
+Hooks.CameraSettings = function(s)
+	State.CameraObj:Sync()
+	if State.HighCamObj then State.HighCamObj:Refresh() end
+end
+
+State.PerfObj = (function()
+	local Lighting = game:GetService("Lighting")
+
+	local DEFAULT_CFG = {
+		Enabled = false,
+		FullBright = false, FullBrightValue = 3,
+		CustomTime = false, TimeOfDay = 14,
+		NoFog = false, NoShadow = false,
+		LowGFX = false,
+		LowGFX_Textures = false, LowGFX_Particles = false,
+		LowGFX_VFX = false, LowGFX_Parts = false, LowGFX_Sky = false,
+		RemoveTree = false, RemoveGrass = false, Keywords = "",
+		GuardInterval = 1.0,
+	}
+
+	local Class = {}
+	Class.__index = Class
+
+	function Class.new()
+		local self = setmetatable({}, Class)
+		self.Settings = table.clone(DEFAULT_CFG)
+		self._saved = {}
+		self._savedLight = nil
+		self._guardThread = nil
+		self._streamConn = nil
+		self._lightingConn = nil
+		self._hidden = {}
+		self._hiddenSet = {}
+		self._removeConn = nil
+		self._removeGen = 0
+		self._removeActive = false
+		return self
+	end
+
+	function Class:_snapshotLighting()
+		if self._savedLight then return end
+		local atm = Lighting:FindFirstChildOfClass("Atmosphere")
+		self._savedLight = {
+			Brightness = Lighting.Brightness, ClockTime = Lighting.ClockTime,
+			FogStart = Lighting.FogStart, FogEnd = Lighting.FogEnd,
+			FogColor = Lighting.FogColor, Ambient = Lighting.Ambient,
+			OutdoorAmbient = Lighting.OutdoorAmbient, GlobalShadows = Lighting.GlobalShadows,
+			Atmosphere = atm and {
+				Density = atm.Density, Offset = atm.Offset,
+				Glare = atm.Glare, Haze = atm.Haze,
+			} or nil,
+		}
+	end
+
+	function Class:_restoreLighting()
+		local s = self._savedLight
+		if not s then return end
+		pcall(function()
+			Lighting.Brightness = s.Brightness
+			Lighting.ClockTime = s.ClockTime
+			Lighting.FogStart = s.FogStart
+			Lighting.FogEnd = s.FogEnd
+			Lighting.FogColor = s.FogColor
+			Lighting.Ambient = s.Ambient
+			Lighting.OutdoorAmbient = s.OutdoorAmbient
+			Lighting.GlobalShadows = s.GlobalShadows
+			if s.Atmosphere then
+				local atm = Lighting:FindFirstChildOfClass("Atmosphere")
+				if atm then
+					atm.Density = s.Atmosphere.Density
+					atm.Offset = s.Atmosphere.Offset
+					atm.Glare = s.Atmosphere.Glare
+					atm.Haze = s.Atmosphere.Haze
+				end
+			end
+		end)
+		self._savedLight = nil
+	end
+
+	function Class:_applyLighting()
+		local S = self.Settings
+
+		if S.FullBright then
+			Lighting.Brightness = S.FullBrightValue
+			Lighting.FogEnd = 100000
+			Lighting.Ambient = Color3.fromRGB(200, 200, 200)
+			Lighting.OutdoorAmbient = Color3.fromRGB(200, 200, 200)
+		end
+
+		if S.CustomTime then
+			Lighting.ClockTime = S.TimeOfDay
+		end
+
+		if S.NoFog then
+			Lighting.FogStart = 0
+			Lighting.FogEnd = 100000
+			Lighting.FogColor = Color3.fromRGB(255, 255, 255)
+			local atm = Lighting:FindFirstChildOfClass("Atmosphere")
+			if atm then
+				atm.Density = 0
+				atm.Offset = 0
+				atm.Glare = 0
+				atm.Haze = 0
+			end
+		end
+
+		if S.NoShadow then
+			Lighting.GlobalShadows = false
+		elseif self._savedLight then
+			Lighting.GlobalShadows = self._savedLight.GlobalShadows
+		end
+	end
+
+	function Class:_lightingWanted()
+		local S = self.Settings
+		return S.FullBright or S.NoFog or S.NoShadow or S.CustomTime
+	end
+
+	function Class:_startGuard()
+		self._guardGen = (self._guardGen or 0) + 1
+		local gen = self._guardGen
+		if not self._guardThread then self._guardThread = true end
+
+		task.spawn(function()
+			while gen == self._guardGen and self.Settings.Enabled and self:_lightingWanted() and not unloaded do
+				task.wait(self.Settings.GuardInterval)
+				if gen ~= self._guardGen then break end
+				pcall(function() self:_applyLighting() end)
+			end
+		end)
+
+		if self._lightingConn then self._lightingConn:Disconnect() end
+		self._lightingConn = Lighting.ChildAdded:Connect(function()
+			if not self.Settings.Enabled then return end
+			if not self:_lightingWanted() then return end
+			task.defer(function() pcall(function() self:_applyLighting() end) end)
+		end)
+	end
+
+	function Class:_stopGuard()
+		self._guardGen = (self._guardGen or 0) + 1
+		self._guardThread = nil
+		if self._lightingConn then
+			self._lightingConn:Disconnect()
+			self._lightingConn = nil
+		end
+	end
+
+	function Class:_save(obj, kind, extra)
+		table.insert(self._saved, { obj = obj, kind = kind, extra = extra })
+	end
+
+	function Class:_processObject(obj)
+		local S = self.Settings
+		if not S.LowGFX or not obj then return end
+		do
+			local m = obj:FindFirstAncestorOfClass("Model")
+			if m and m:FindFirstChildOfClass("Humanoid") then return end
+		end
+
+		if S.LowGFX_Parts
+			and (obj:IsA("BasePart") or obj:IsA("UnionOperation") or obj:IsA("MeshPart"))
+			and obj.Material ~= Enum.Material.SmoothPlastic then
+			self:_save(obj, "Part", obj.Material)
+			obj.Material = Enum.Material.SmoothPlastic
+		end
+
+		if S.LowGFX_Particles
+			and (obj:IsA("ParticleEmitter") or obj:IsA("Smoke") or obj:IsA("Explosion")
+				or obj:IsA("Sparkles") or obj:IsA("Fire"))
+			and obj.Enabled ~= false then
+			self:_save(obj, "Particle", true)
+			obj.Enabled = false
+		end
+
+		if S.LowGFX_VFX
+			and (obj:IsA("BloomEffect") or obj:IsA("BlurEffect") or obj:IsA("DepthOfFieldEffect")
+				or obj:IsA("SunRaysEffect") or obj:IsA("ColorCorrectionEffect"))
+			and obj.Enabled ~= false then
+			self:_save(obj, "VFX", true)
+			obj.Enabled = false
+		end
+
+		if S.LowGFX_Textures
+			and (obj:IsA("Decal") or obj:IsA("Texture"))
+			and obj.Texture ~= "" then
+			self:_save(obj, "Texture", obj.Texture)
+			obj.Texture = ""
+		end
+
+		if S.LowGFX_Sky and obj:IsA("Sky") then
+			self:_save(obj, "Sky", obj.Parent)
+			obj.Parent = nil
+		end
+	end
+
+	function Class:_applyLowGFX()
+		if not self.Settings.LowGFX or self._lowBusy then return end
+		self._lowBusy = true
+
+		for _, root in ipairs({ workspace, Lighting }) do
+			local desc = root:GetDescendants()
+			for i, d in ipairs(desc) do
+				if i % 250 == 0 then task.wait() end
+				self:_processObject(d)
+			end
+		end
+
+		if self._streamConn then self._streamConn:Disconnect() end
+		self._streamConn = workspace.DescendantAdded:Connect(function(d)
+			if not self.Settings.Enabled or not self.Settings.LowGFX then return end
+			task.defer(function() self:_processObject(d) end)
+		end)
+		self._lowBusy = false
+	end
+
+	function Class:_restoreLowGFX()
+		self._lowBusy = false
+		if self._streamConn then
+			self._streamConn:Disconnect()
+			self._streamConn = nil
+		end
+
+		for _, rec in ipairs(self._saved) do
+			local obj = rec.obj
+			if obj and obj.Parent then
+				pcall(function()
+					if rec.kind == "Part" then obj.Material = rec.extra
+					elseif rec.kind == "Texture" then obj.Texture = rec.extra
+					elseif rec.kind == "Particle" or rec.kind == "VFX" then obj.Enabled = rec.extra
+					end
+				end)
+			elseif rec.kind == "Sky" and rec.extra and rec.obj then
+				pcall(function() rec.obj.Parent = rec.extra end)
+			end
+		end
+		self._saved = {}
+	end
+
+	local TREE_PATTERNS = {
+		"%f[%a]trees?%f[%A]", "%f[%a]bush", "%f[%a]shrub", "%f[%a]foliage", "%f[%a]leaf", "%f[%a]leaves",
+		"%f[%a]trunk", "%f[%a]branch", "%f[%a]stump", "%f[%a]pine", "%f[%a]oak", "%f[%a]birch",
+		"%f[%a]spruce", "%f[%a]palm", "%f[%a]bamboo", "%f[%a]hedge", "%f[%a]cypress", "%f[%a]willow",
+		"%f[%a]forest", "%f[%a]twig", "%f[%a]sapling", "%f[%a]canopy", "%f[%a]maple", "%f[%a]cedar",
+	}
+	local GRASS_PATTERNS = {
+		"%f[%a]grass", "%f[%a]weeds?%f[%A]", "%f[%a]fern", "%f[%a]plants?%f[%A]", "%f[%a]vines?%f[%A]",
+		"%f[%a]flowers?%f[%A]", "%f[%a]reeds?%f[%A]", "%f[%a]vegetation", "%f[%a]moss", "%f[%a]clover",
+		"%f[%a]meadow",
+	}
+	local EXCLUDE_WORDS = {
+		"generator", "pallet", "hook", "gate", "window", "vault", "exit", "chest", "locker", "door",
+		"rock", "stone", "boulder", "crate", "barrel", "box", "brick", "wall", "fence", "street",
+		"house", "home", "cabin", "building", "shed", "barn", "hut", "tent", "shack", "church", "roof",
+		"floor", "stair", "porch", "basement", "garage", "bunker", "tower", "bridge",
+		"temple", "mansion", "hospital", "school", "factory", "warehouse",
+	}
+
+	local function matchPatterns(name, list)
+		local n = string.lower(name)
+		for _, pat in ipairs(list) do
+			if string.find(n, pat) then return true end
+		end
+		return false
+	end
+
+	local function matchPlain(name, list)
+		local n = string.lower(name)
+		for _, w in ipairs(list) do
+			if string.find(n, w, 1, true) then return true end
+		end
+		return false
+	end
+
+	local function nameHit(self, name)
+		return matchPatterns(name, self._tgPatterns) or matchPlain(name, self._tgCustom)
+	end
+
+	local function treeModel(self, m)
+		local cache = self._tgCache
+		local c = cache[m]
+		if c == true then return true end
+		if c and os.clock() < c then return false end
+		local res = false
+		if nameHit(self, m.Name) then
+			res = true
+		else
+			local okSize, ext = pcall(function() return m:GetExtentsSize() end)
+			if okSize and ext.Magnitude < 70 then
+				local kids = m:GetChildren()
+				local total, hits = math.min(#kids, 80), 0
+				for i = 1, total do
+					local kid = kids[i]
+					if nameHit(self, kid.Name)
+						or (kid:IsA("BasePart") and kid.Material == Enum.Material.LeafyGrass) then
+						hits = hits + 1
+					end
+				end
+				if total > 0 and hits >= math.max(1, math.floor(total * 0.3)) then res = true end
+			end
+		end
+		cache[m] = res and true or (os.clock() + 3)
+		return res
+	end
+
+	local function isFoliage(self, inst)
+		local hit = false
+		local cur, depth = inst, 0
+		while cur and cur ~= workspace and depth < 10 do
+			if cur:IsA("Model") then
+				if cur:FindFirstChildOfClass("Humanoid") then return false end
+				if treeModel(self, cur) then hit = true end
+			end
+			if cur:IsA("Model") or cur == inst then
+				if matchPlain(cur.Name, EXCLUDE_WORDS) then return false end
+			end
+			if nameHit(self, cur.Name) then hit = true end
+			cur = cur.Parent
+			depth = depth + 1
+		end
+		return hit
+	end
+
+	local function hideInst(self, inst)
+		local saved = self._tgSaved
+		if saved[inst] then return end
+		local S = self.Settings
+		if inst:IsA("BasePart") then
+			if inst:IsA("Terrain") then return end
+			local sz = inst.Size
+			if math.max(sz.X, sz.Z) > 45 and not nameHit(self, inst.Name) then return end
+			if S.RemoveGrass and inst.Material == Enum.Material.Grass then
+				saved[inst] = { kind = "mat", m = inst.Material }
+				inst.Material = Enum.Material.Ground
+				return
+			end
+			local leafy = inst.Material == Enum.Material.LeafyGrass and (S.RemoveGrass or S.RemoveTree)
+			if not (leafy or isFoliage(self, inst)) then return end
+			saved[inst] = {
+				kind = "part", t = inst.Transparency, cs = inst.CastShadow,
+				cc = inst.CanCollide, cq = inst.CanQuery, ct = inst.CanTouch,
+			}
+			inst.Transparency = 1
+			inst.CastShadow = false
+		elseif inst:IsA("Decal") or inst:IsA("Texture") then
+			if not isFoliage(self, inst) then return end
+			saved[inst] = { kind = "decal", t = inst.Transparency }
+			inst.Transparency = 1
+		elseif inst:IsA("ParticleEmitter") or inst:IsA("Beam") or inst:IsA("Trail") then
+			if not isFoliage(self, inst) then return end
+			saved[inst] = { kind = "fx", e = inst.Enabled }
+			inst.Enabled = false
+		end
+	end
+
+	function Class:_setTerrainGrassHidden(hidden)
+		local terrain = workspace:FindFirstChildOfClass("Terrain")
+		if not terrain then return end
+		local function put(v)
+			local ok = pcall(function() terrain.Decoration = v end)
+			if (not ok or terrain.Decoration ~= v) and type(sethiddenproperty) == "function" then
+				pcall(sethiddenproperty, terrain, "Decoration", v)
+			end
+		end
+		if hidden then
+			if self._terrainDecorationOriginal == nil then
+				local ok, value = pcall(function() return terrain.Decoration end)
+				if ok then self._terrainDecorationOriginal = value end
+			end
+			put(false)
+		elseif self._terrainDecorationOriginal ~= nil then
+			put(self._terrainDecorationOriginal)
+			self._terrainDecorationOriginal = nil
+		end
+	end
+
+	function Class:_scanRemove(gen)
+		local list = workspace:GetDescendants()
+		local t0 = os.clock()
+		for _, inst in ipairs(list) do
+			if gen ~= self._removeGen or not self._removeActive or unloaded then return end
+			pcall(hideInst, self, inst)
+			if os.clock() - t0 > 0.004 then
+				task.wait()
+				t0 = os.clock()
+			end
+		end
+	end
+
+	function Class:_applyRemove()
+		local S = self.Settings
+		local patterns = {}
+		if S.RemoveTree then
+			for _, p in ipairs(TREE_PATTERNS) do table.insert(patterns, p) end
+		end
+		if S.RemoveGrass then
+			for _, p in ipairs(GRASS_PATTERNS) do table.insert(patterns, p) end
+		end
+		local custom = {}
+		if #patterns > 0 then
+			for part in string.gmatch(string.lower(S.Keywords or ""), "[^,]+") do
+				local word = part:match("^%s*(.-)%s*$")
+				if word ~= "" then table.insert(custom, word) end
+			end
+		end
+		self._tgPatterns, self._tgCustom = patterns, custom
+		self._tgCache = setmetatable({}, { __mode = "k" })
+		self._tgSaved = self._tgSaved or {}
+		self:_setTerrainGrassHidden(S.RemoveGrass == true)
+		if #patterns == 0 then
+			self._removeActive = false
+			return
+		end
+
+		self._removeActive = true
+		self._removeGen = (self._removeGen or 0) + 1
+		local gen = self._removeGen
+
+		if self._removeConn then self._removeConn:Disconnect() end
+		self._removeConn = workspace.DescendantAdded:Connect(function(d)
+			if self._removeActive and gen == self._removeGen then
+				pcall(hideInst, self, d)
+			end
+		end)
+
+		task.spawn(function()
+			local round = 0
+			while S.Enabled and gen == self._removeGen and not unloaded do
+				task.wait(2)
+				if gen ~= self._removeGen then break end
+				if S.RemoveGrass then self:_setTerrainGrassHidden(true) end
+				round = round + 1
+				if round % 3 == 0 then self:_scanRemove(gen) end
+			end
+		end)
+
+		self:_scanRemove(gen)
+	end
+
+	function Class:_restoreRemove()
+		self._removeActive = false
+		self._removeGen = (self._removeGen or 0) + 1
+		if self._removeConn then
+			self._removeConn:Disconnect()
+			self._removeConn = nil
+		end
+		for inst, o in pairs(self._tgSaved or {}) do
+			pcall(function()
+				if o.kind == "part" then
+					inst.Transparency = o.t
+					inst.CastShadow = o.cs
+					inst.CanCollide = o.cc
+					inst.CanQuery = o.cq
+					inst.CanTouch = o.ct
+				elseif o.kind == "mat" then
+					inst.Material = o.m
+				elseif o.kind == "decal" then
+					inst.Transparency = o.t
+				elseif o.kind == "fx" then
+					inst.Enabled = o.e
+				end
+			end)
+		end
+		self._tgSaved = {}
+		self:_setTerrainGrassHidden(false)
+	end
+
+	function Class:Refresh()
+		if not self.Settings.Enabled then return end
+		self:_applyLighting()
+		if self.Settings.LowGFX and #self._saved == 0 then
+			task.spawn(function() self:_applyLowGFX() end)
+		end
+	end
+
+	function Class:Start()
+		self.Settings.Enabled = true
+		self:_snapshotLighting()
+		self:_applyLighting()
+		self:_startGuard()
+		if self.Settings.LowGFX then
+			task.spawn(function() self:_applyLowGFX() end)
+		end
+		task.spawn(function() self:_applyRemove() end)
+	end
+
+	function Class:Stop()
+		self.Settings.Enabled = false
+		self:_stopGuard()
+		self:_restoreLowGFX()
+		self:_restoreRemove()
+		self:_restoreLighting()
+	end
+
+	function Class:Set(key, value)
+		self.Settings[key] = value
+		if not self.Settings.Enabled then return end
+
+		if key == "LowGFX" and value == false then
+			self:_restoreLowGFX()
+		end
+		if key == "FullBright" or key == "NoFog" or key == "NoShadow" or key == "CustomTime" then
+			self:_restoreLighting()
+		end
+		if key == "RemoveTree" or key == "RemoveGrass" or key == "Keywords" then
+			self:_restoreRemove()
+			task.spawn(function() self:_applyRemove() end)
+		end
+		if key:sub(1, 7) == "LowGFX_" and self.Settings.LowGFX then
+			self:_restoreLowGFX()
+			task.spawn(function() self:_applyLowGFX() end)
+		end
+
+		if self:_lightingWanted() then
+			self:_snapshotLighting()
+			self:_startGuard()
+		else
+			self:_restoreLighting()
+			self:_stopGuard()
+		end
+		self:Refresh()
+	end
+
+	return Class.new()
+end)()
+
+State.WorldSettings = State.PerfObj.Settings
+Hooks.WorldSettings = function(s)
+	if s.Enabled then State.PerfObj:Start() else State.PerfObj:Stop() end
+end
+
+local Lucide
+do
+	local ok, res = pcall(function()
+		return loadstring(game:HttpGet(
+			"https://github.com/latte-soft/lucide-roblox/releases/latest/download/lucide-roblox.luau"
+		))()
+	end)
+	if ok and type(res) == "table" and res.GetAsset then
+		Lucide = res
+	else
+		warn("[" .. HUB_NAME .. "] Failed to load Lucide, icons replaced with first letters.")
+	end
+end
+
+local WHITE = Color3.new(1, 1, 1)
+local C = {
+	Panel    = Color3.fromRGB(8, 8, 8),
+	Card     = Color3.fromRGB(18, 18, 18),
+	Surface  = Color3.fromRGB(34, 34, 34),
+	Accent   = Color3.fromRGB(245, 245, 245),
+	OnAccent = Color3.fromRGB(10, 10, 10),
+	Text     = Color3.fromRGB(245, 245, 245),
+	Muted    = Color3.fromRGB(176, 176, 176),
+	Sub      = Color3.fromRGB(122, 122, 122),
+}
+
+local WIDTH      = 400
+local HEADER_H   = 42
+local CARD_H     = 52
+local OPT_H      = 34
+local MAX_BODY_H = 300
+local NOTCH_W, NOTCH_H, NOTCH_Y = 212, 38, 8
+
+local function new(class, props, parent)
+	local inst = Instance.new(class)
+	for k, v in pairs(props or {}) do inst[k] = v end
+	inst.Parent = parent
+	return inst
+end
+
+local function corner(inst, r)
+	return new("UICorner", { CornerRadius = UDim.new(0, r) }, inst)
+end
+
+local function icon(name, size, color, parent, extra)
+	local props = {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(size, size),
+		BackgroundTransparency = 1,
+	}
+	for k, v in pairs(extra or {}) do props[k] = v end
+
+	if Lucide then
+		local ok, asset = pcall(Lucide.GetAsset, name, 48)
+		if not ok or not asset then ok, asset = pcall(Lucide.GetAsset, name) end
+		if ok and asset then
+			props.Image = asset.Url
+			props.ImageRectSize = asset.ImageRectSize
+			props.ImageRectOffset = asset.ImageRectOffset
+			props.ImageColor3 = color
+			return new("ImageLabel", props, parent)
+		end
+	end
+
+	props.Text = name:sub(1, 1):upper()
+	props.TextColor3 = color
+	props.Font = Enum.Font.GothamBold
+	props.TextSize = size - 2
+	return new("TextLabel", props, parent)
+end
+
+local function tweenIconColor(inst, color)
+	local prop = inst:IsA("ImageLabel") and "ImageColor3" or "TextColor3"
+	TweenService:Create(inst, TweenInfo.new(0.18), { [prop] = color }):Play()
+end
+
+local function getParent()
+	local ok, ui = pcall(function() return gethui and gethui() end)
+	if ok and ui then return ui end
+	local core = game:GetService("CoreGui")
+	local okTest = pcall(function()
+		local t = Instance.new("Folder"); t.Parent = core; t:Destroy()
+	end)
+	if okTest then return core end
+	return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+local parent = getParent()
+for _, p in ipairs({ parent, LocalPlayer:FindFirstChild("PlayerGui") }) do
+	local old = p and p:FindFirstChild(GUI_NAME)
+	if old then old:Destroy() end
+end
+
+local Gui = new("ScreenGui", {
+	Name = GUI_NAME,
+	ResetOnSpawn = false,
+	IgnoreGuiInset = true,
+	DisplayOrder = 999,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+})
+if syn and syn.protect_gui then pcall(syn.protect_gui, Gui) end
+Gui.Parent = parent
+
+local VD_SkipParryOptions = {
+	["106871536134254"] = false,
+	["117070354890871"] = false,
+	["73681849513551"] = false,
+	["100014992013740"] = false,
+}
+local VD_SkipParryNameToId = {
+	["Masked Alex Attack"] = "106871536134254",
+	["Masked Alex Lunge"]  = "117070354890871",
+	["Hidden Dash"]        = "73681849513551",
+	["Abyswalker Slash"]   = "100014992013740",
+}
+
+local FloatingParryButtonEnabled = false
+local ParryUIRefresh = function() end
+local FloatingParryButtonEnabledV2 = false
+local ParryUIRefreshV2 = function() end
+
+local ParryCirclePart, ParryCircleAdornment
+
+local function KINON_ShouldPassFaceCheck(killerRoot, playerRoot)
+	if Parry.AggressiveMode then
+		return true
+	end
+	if not killerRoot or not playerRoot then
+		return false
+	end
+	local memo = Parry.FaceMemo
+	if not memo then
+		memo = setmetatable({}, { __mode = "k" })
+		Parry.FaceMemo = memo
+	end
+	local now = os.clock()
+	if memo[killerRoot] and now - memo[killerRoot] < 0.6 then
+		return true
+	end
+	local offset = playerRoot.Position - killerRoot.Position
+	local dist = offset.Magnitude
+	if dist <= 6 then
+		return true
+	end
+	local dir = offset.Unit
+	local sensitivity = math.clamp(tonumber(Parry.FaceSensitivity) or 10, 0, 10) / 10
+	local maxAngle = 20 + sensitivity * 100
+	local cosLimit = math.cos(math.rad(maxAngle))
+	local passed = killerRoot.CFrame.LookVector:Dot(dir) >= cosLimit
+	if not passed then
+		local model = killerRoot.Parent
+		local head = model and model:FindFirstChild("Head")
+		if head and head:IsA("BasePart") and head.CFrame.LookVector:Dot(dir) >= cosLimit then
+			passed = true
+		end
+	end
+	if not passed then
+		local vel = killerRoot.AssemblyLinearVelocity
+		if vel and vel.Magnitude > 8 then
+			local velLimit = math.cos(math.rad(math.min(maxAngle + 20, 150)))
+			if vel.Unit:Dot(dir) >= velLimit then passed = true end
+		end
+	end
+	if passed then memo[killerRoot] = now end
+	return passed
+end
+
+local function KINON_ShouldPassFaceCheckV2(killerRoot, playerRoot)
+	if ParryV2.AggressiveMode then
+		return true
+	end
+	if not killerRoot or not playerRoot then
+		return false
+	end
+	local memo = ParryV2.FaceMemo
+	if not memo then
+		memo = setmetatable({}, { __mode = "k" })
+		ParryV2.FaceMemo = memo
+	end
+	local now = os.clock()
+	if memo[killerRoot] and now - memo[killerRoot] < 0.6 then
+		return true
+	end
+	local offset = playerRoot.Position - killerRoot.Position
+	local dist = offset.Magnitude
+	if dist <= 6 then
+		return true
+	end
+	local dir = offset.Unit
+	local sensitivity = math.clamp(tonumber(ParryV2.FaceSensitivity) or 10, 0, 10) / 10
+	local maxAngle = 20 + sensitivity * 100
+	local cosLimit = math.cos(math.rad(maxAngle))
+	local passed = killerRoot.CFrame.LookVector:Dot(dir) >= cosLimit
+	if not passed then
+		local model = killerRoot.Parent
+		local head = model and model:FindFirstChild("Head")
+		if head and head:IsA("BasePart") and head.CFrame.LookVector:Dot(dir) >= cosLimit then
+			passed = true
+		end
+	end
+	if not passed then
+		local vel = killerRoot.AssemblyLinearVelocity
+		if vel and vel.Magnitude > 8 then
+			local velLimit = math.cos(math.rad(math.min(maxAngle + 20, 150)))
+			if vel.Unit:Dot(dir) >= velLimit then passed = true end
+		end
+	end
+	if passed then memo[killerRoot] = now end
+	return passed
+end
+
+local function KINON_InRangeAndFacingV2(killerRoot, playerRoot, positionOverride, measuredVel)
+	if not killerRoot or not playerRoot then return false end
+	local targetPosition = positionOverride or killerRoot.Position
+	local distance = (targetPosition - playerRoot.Position).Magnitude
+	local range = math.clamp(tonumber(ParryV2.Range) or 14, 5, 35)
+	if distance > range and not positionOverride then
+		local extra = 0
+		pcall(function()
+			local toPlayer = playerRoot.Position - killerRoot.Position
+			if toPlayer.Magnitude > 0.01 then
+				local dirToPlayer = toPlayer.Unit
+
+				local killerVel = killerRoot.AssemblyLinearVelocity or Vector3.zero
+				if measuredVel and measuredVel.Magnitude > killerVel.Magnitude then killerVel = measuredVel end
+				local playerVel = playerRoot.AssemblyLinearVelocity or Vector3.zero
+				local closing = math.max(30, killerVel:Dot(dirToPlayer) - playerVel:Dot(dirToPlayer))
+				local ping = 0.05
+				local okPing, value = pcall(function() return LP:GetNetworkPing() end)
+				if okPing and type(value) == "number" then ping = value end
+
+				extra = math.clamp(closing * (ping * 2 + 0.22), 0, 34)
+			end
+		end)
+		range = range + extra
+	end
+	if distance > range then return false end
+	if not KINON_ShouldPassFaceCheckV2(killerRoot, playerRoot) then return false end
+	return true
+end
+
+local function CreateCustomParryGUI()
+	local shared = _G.KINON_AutoParryShortcut
+	if type(shared) ~= "table" then shared = {}; _G.KINON_AutoParryShortcut = shared end
+	if shared.InputConn then pcall(function() shared.InputConn:Disconnect() end); shared.InputConn = nil end
+	if shared.Gui then pcall(function() shared.Gui:Destroy() end); shared.Gui = nil end
+
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "KINON_AutoParryShortcut"
+	screenGui.ResetOnSpawn = false
+	screenGui.IgnoreGuiInset = true
+	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	screenGui.Parent = parent
+	shared.Gui = screenGui
+	shared.GuiVisible = true
+
+	local frame = Instance.new("Frame")
+	frame.Name = "Frame"
+	frame.Size = UDim2.fromOffset(142, 34)
+	frame.Position = shared.Position or UDim2.new(1, -138, 0.35, 0)
+	frame.BackgroundColor3 = WHITE
+	frame.BackgroundTransparency = 0.02
+	frame.Active = true
+	frame.BorderSizePixel = 0
+	frame.Parent = screenGui
+	frame.ZIndex = 150
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 9)
+
+	local frameStroke = Instance.new("UIStroke")
+	frameStroke.Name = "UIStroke"
+	frameStroke.Color = Color3.fromRGB(90, 90, 90)
+	frameStroke.Thickness = 1
+	frameStroke.Transparency = 0.12
+	frameStroke.Parent = frame
+
+	local gradient = Instance.new("UIGradient")
+	gradient.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(34, 34, 34)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(8, 8, 8)),
+	})
+	gradient.Rotation = 90
+	gradient.Parent = frame
+
+	local button = Instance.new("TextButton")
+	button.Name = "ActionButton"
+	button.Size = UDim2.fromScale(1, 1)
+	button.BackgroundTransparency = 1
+	button.Font = Enum.Font.GothamBold
+	button.Text = ""
+	button.TextColor3 = C.Text
+	button.AutoButtonColor = false
+	button.Parent = frame
+	button.ZIndex = 151
+
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.BackgroundTransparency = 1
+	title.Position = UDim2.fromOffset(9, 0)
+	title.Size = UDim2.new(1, -18, 1, 0)
+	title.Font = Enum.Font.GothamBold
+	title.Text = "AUTO PARRY   [OFF]"
+	title.TextSize = 10
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.TextYAlignment = Enum.TextYAlignment.Center
+	title.TextColor3 = C.Text
+	title.Parent = button
+	title.ZIndex = 152
+
+	task.defer(function()
+		if not frame.Parent then return end
+		local camera = workspace.CurrentCamera
+		local viewport = camera and camera.ViewportSize or Vector2.new(800, 600)
+		local pos, size = frame.Position, frame.AbsoluteSize
+		local px = pos.X.Scale * viewport.X + pos.X.Offset
+		local py = pos.Y.Scale * viewport.Y + pos.Y.Offset
+		frame.Position = UDim2.fromOffset(
+			math.clamp(px, 0, math.max(0, viewport.X - size.X)),
+			math.clamp(py, 0, math.max(0, viewport.Y - size.Y))
+		)
+		shared.Position = frame.Position
+	end)
+
+	local function refreshButton()
+		local enabled = Parry.Enabled == true
+		title.Text = enabled and "AUTO PARRY   [ON]" or "AUTO PARRY   [OFF]"
+		title.TextColor3 = enabled and WHITE or Color3.fromRGB(170, 170, 170)
+		frameStroke.Color = enabled and WHITE or Color3.fromRGB(90, 90, 90)
+		frameStroke.Transparency = enabled and 0.02 or 0.12
+	end
+	shared.RefreshButton = refreshButton
+
+	local function toggleParry()
+		if not Parry.Enabled and ParryV2.Enabled then
+			refreshButton()
+			return
+		end
+		Parry.Enabled = not Parry.Enabled
+		refreshButton()
+		ParryUIRefresh()
+	end
+
+	task.defer(function()
+		if not frame.Parent then return end
+		title.Text = "AUTO PARRY   [ON]";  local onWidth  = title.TextBounds.X
+		title.Text = "AUTO PARRY   [OFF]"; local offWidth = title.TextBounds.X
+		title.Text = Parry.Enabled and "AUTO PARRY   [ON]" or "AUTO PARRY   [OFF]"
+		frame.Size = UDim2.fromOffset(
+			math.clamp(math.ceil(math.max(onWidth, offWidth)) + 26, 116, 166), 38)
+		title.Size = UDim2.new(1, -18, 1, 0)
+		refreshButton()
+	end)
+	refreshButton()
+
+	local pressed, moved = false, false
+	local activeInput, startPointer, startX, startY
+	local dragThreshold = 6
+
+	local function viewport()
+		local camera = workspace.CurrentCamera
+		return camera and camera.ViewportSize or Vector2.new(800, 600)
+	end
+	local function beginDrag(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1
+			and input.UserInputType ~= Enum.UserInputType.Touch then return end
+		pressed, moved = true, false
+		activeInput = input
+		startPointer = Vector2.new(input.Position.X, input.Position.Y)
+		local vp, pos = viewport(), frame.Position
+		startX = pos.X.Scale * vp.X + pos.X.Offset
+		startY = pos.Y.Scale * vp.Y + pos.Y.Offset
+	end
+	local function moveDrag(input)
+		if not pressed or not startPointer then return end
+		local delta = Vector2.new(input.Position.X, input.Position.Y) - startPointer
+		if not moved and delta.Magnitude > dragThreshold then moved = true end
+		if not moved then return end
+		local vp, size = viewport(), frame.AbsoluteSize
+		frame.Position = UDim2.fromOffset(
+			math.clamp(startX + delta.X, 0, math.max(0, vp.X - size.X)),
+			math.clamp(startY + delta.Y, 0, math.max(0, vp.Y - size.Y))
+		)
+		shared.Position = frame.Position
+	end
+
+	button.InputBegan:Connect(beginDrag)
+
+	shared.InputConn = UserInputService.InputChanged:Connect(function(input)
+		if not pressed or not activeInput then return end
+		if activeInput.UserInputType == Enum.UserInputType.MouseButton1
+			and input.UserInputType == Enum.UserInputType.MouseMovement then
+			moveDrag(input)
+		elseif activeInput.UserInputType == Enum.UserInputType.Touch and input == activeInput then
+			moveDrag(input)
+		end
+	end)
+	shared.TouchMoveConn = UserInputService.TouchMoved:Connect(function(input)
+		if pressed and activeInput and activeInput.UserInputType == Enum.UserInputType.Touch
+			and input == activeInput then moveDrag(input) end
+	end)
+	shared.EndConn = UserInputService.InputEnded:Connect(function(input)
+		if not pressed or not activeInput then return end
+		local matchTouch = activeInput.UserInputType == Enum.UserInputType.Touch
+			and input.UserInputType == Enum.UserInputType.Touch and input == activeInput
+		local matchMouse = activeInput.UserInputType == Enum.UserInputType.MouseButton1
+			and input.UserInputType == Enum.UserInputType.MouseButton1
+		if not matchTouch and not matchMouse then return end
+		if not moved then toggleParry() end
+		pressed, moved, activeInput = false, false, nil
+		startPointer = nil
+	end)
+
+	screenGui.Enabled = FloatingParryButtonEnabled
+	track(screenGui.Destroying:Connect(function()
+		if shared.InputConn     then pcall(function() shared.InputConn:Disconnect() end)     end
+		if shared.EndConn       then pcall(function() shared.EndConn:Disconnect() end)       end
+		if shared.TouchMoveConn then pcall(function() shared.TouchMoveConn:Disconnect() end) end
+	end))
+	return screenGui
+end
+
+local CustomParryGui = CreateCustomParryGUI()
+
+local function CreateCustomParryGUIV2()
+	local shared = _G.KINON_AutoParryV2Shortcut
+	if type(shared) ~= "table" then shared = {}; _G.KINON_AutoParryV2Shortcut = shared end
+	if shared.InputConn then pcall(function() shared.InputConn:Disconnect() end); shared.InputConn = nil end
+	if shared.Gui then pcall(function() shared.Gui:Destroy() end); shared.Gui = nil end
+
+	local screenGui = Instance.new("ScreenGui")
+	screenGui.Name = "KINON_AutoParryV2Shortcut"
+	screenGui.ResetOnSpawn = false
+	screenGui.IgnoreGuiInset = true
+	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	screenGui.Parent = parent
+	shared.Gui = screenGui
+	shared.GuiVisible = true
+
+	local frame = Instance.new("Frame")
+	frame.Name = "Frame"
+	frame.Size = UDim2.fromOffset(142, 34)
+	frame.Position = shared.Position or UDim2.new(1, -138, 0.44, 0)
+	frame.BackgroundColor3 = WHITE
+	frame.BackgroundTransparency = 0.02
+	frame.Active = true
+	frame.BorderSizePixel = 0
+	frame.Parent = screenGui
+	frame.ZIndex = 150
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 9)
+
+	local frameStroke = Instance.new("UIStroke")
+	frameStroke.Name = "UIStroke"
+	frameStroke.Color = Color3.fromRGB(90, 90, 90)
+	frameStroke.Thickness = 1
+	frameStroke.Transparency = 0.12
+	frameStroke.Parent = frame
+
+	local gradient = Instance.new("UIGradient")
+	gradient.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(34, 34, 34)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(8, 8, 8)),
+	})
+	gradient.Rotation = 90
+	gradient.Parent = frame
+
+	local button = Instance.new("TextButton")
+	button.Name = "ActionButton"
+	button.Size = UDim2.fromScale(1, 1)
+	button.BackgroundTransparency = 1
+	button.Font = Enum.Font.GothamBold
+	button.Text = ""
+	button.TextColor3 = C.Text
+	button.AutoButtonColor = false
+	button.Parent = frame
+	button.ZIndex = 151
+
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.BackgroundTransparency = 1
+	title.Position = UDim2.fromOffset(9, 0)
+	title.Size = UDim2.new(1, -18, 1, 0)
+	title.Font = Enum.Font.GothamBold
+	title.Text = "AUTO PARRY V2   [OFF]"
+	title.TextSize = 10
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.TextYAlignment = Enum.TextYAlignment.Center
+	title.TextColor3 = C.Text
+	title.Parent = button
+	title.ZIndex = 152
+
+	task.defer(function()
+		if not frame.Parent then return end
+		local camera = workspace.CurrentCamera
+		local viewport = camera and camera.ViewportSize or Vector2.new(800, 600)
+		local pos, size = frame.Position, frame.AbsoluteSize
+		local px = pos.X.Scale * viewport.X + pos.X.Offset
+		local py = pos.Y.Scale * viewport.Y + pos.Y.Offset
+		frame.Position = UDim2.fromOffset(
+			math.clamp(px, 0, math.max(0, viewport.X - size.X)),
+			math.clamp(py, 0, math.max(0, viewport.Y - size.Y))
+		)
+		shared.Position = frame.Position
+	end)
+
+	local function refreshButton()
+		local enabled = ParryV2.Enabled == true
+		title.Text = enabled and "AUTO PARRY V2   [ON]" or "AUTO PARRY V2   [OFF]"
+		title.TextColor3 = enabled and WHITE or Color3.fromRGB(170, 170, 170)
+		frameStroke.Color = enabled and WHITE or Color3.fromRGB(90, 90, 90)
+		frameStroke.Transparency = enabled and 0.02 or 0.12
+	end
+	shared.RefreshButton = refreshButton
+
+	local function toggleParryV2()
+		if Parry.Enabled then
+			Parry.Enabled = false
+			local v1 = _G.KINON_AutoParryShortcut
+			if type(v1) == "table" and type(v1.RefreshButton) == "function" then pcall(v1.RefreshButton) end
+			ParryUIRefresh()
+		end
+		ParryV2.Enabled = not ParryV2.Enabled
+		refreshButton()
+		ParryUIRefreshV2()
+	end
+
+	task.defer(function()
+		if not frame.Parent then return end
+		title.Text = "AUTO PARRY V2   [ON]";  local onWidth  = title.TextBounds.X
+		title.Text = "AUTO PARRY V2   [OFF]"; local offWidth = title.TextBounds.X
+		title.Text = ParryV2.Enabled and "AUTO PARRY V2   [ON]" or "AUTO PARRY V2   [OFF]"
+		frame.Size = UDim2.fromOffset(
+			math.clamp(math.ceil(math.max(onWidth, offWidth)) + 26, 116, 166), 38)
+		title.Size = UDim2.new(1, -18, 1, 0)
+		refreshButton()
+	end)
+	refreshButton()
+
+	local pressed, moved = false, false
+	local activeInput, startPointer, startX, startY
+	local dragThreshold = 6
+
+	local function viewport()
+		local camera = workspace.CurrentCamera
+		return camera and camera.ViewportSize or Vector2.new(800, 600)
+	end
+	local function beginDrag(input)
+		if input.UserInputType ~= Enum.UserInputType.MouseButton1
+			and input.UserInputType ~= Enum.UserInputType.Touch then return end
+		pressed, moved = true, false
+		activeInput = input
+		startPointer = Vector2.new(input.Position.X, input.Position.Y)
+		local vp, pos = viewport(), frame.Position
+		startX = pos.X.Scale * vp.X + pos.X.Offset
+		startY = pos.Y.Scale * vp.Y + pos.Y.Offset
+	end
+	local function moveDrag(input)
+		if not pressed or not startPointer then return end
+		local delta = Vector2.new(input.Position.X, input.Position.Y) - startPointer
+		if not moved and delta.Magnitude > dragThreshold then moved = true end
+		if not moved then return end
+		local vp, size = viewport(), frame.AbsoluteSize
+		frame.Position = UDim2.fromOffset(
+			math.clamp(startX + delta.X, 0, math.max(0, vp.X - size.X)),
+			math.clamp(startY + delta.Y, 0, math.max(0, vp.Y - size.Y))
+		)
+		shared.Position = frame.Position
+	end
+
+	button.InputBegan:Connect(beginDrag)
+
+	shared.InputConn = UserInputService.InputChanged:Connect(function(input)
+		if not pressed or not activeInput then return end
+		if activeInput.UserInputType == Enum.UserInputType.MouseButton1
+			and input.UserInputType == Enum.UserInputType.MouseMovement then
+			moveDrag(input)
+		elseif activeInput.UserInputType == Enum.UserInputType.Touch and input == activeInput then
+			moveDrag(input)
+		end
+	end)
+	shared.TouchMoveConn = UserInputService.TouchMoved:Connect(function(input)
+		if pressed and activeInput and activeInput.UserInputType == Enum.UserInputType.Touch
+			and input == activeInput then moveDrag(input) end
+	end)
+	shared.EndConn = UserInputService.InputEnded:Connect(function(input)
+		if not pressed or not activeInput then return end
+		local matchTouch = activeInput.UserInputType == Enum.UserInputType.Touch
+			and input.UserInputType == Enum.UserInputType.Touch and input == activeInput
+		local matchMouse = activeInput.UserInputType == Enum.UserInputType.MouseButton1
+			and input.UserInputType == Enum.UserInputType.MouseButton1
+		if not matchTouch and not matchMouse then return end
+		if not moved then toggleParryV2() end
+		pressed, moved, activeInput = false, false, nil
+		startPointer = nil
+	end)
+
+	screenGui.Enabled = FloatingParryButtonEnabledV2
+	track(screenGui.Destroying:Connect(function()
+		if shared.InputConn     then pcall(function() shared.InputConn:Disconnect() end)     end
+		if shared.EndConn       then pcall(function() shared.EndConn:Disconnect() end)       end
+		if shared.TouchMoveConn then pcall(function() shared.TouchMoveConn:Disconnect() end) end
+	end))
+	return screenGui
+end
+
+local CustomParryGuiV2 = CreateCustomParryGUIV2()
+
+if CustomParryGui then CustomParryGui.Enabled = false end
+Parry.ShouldPassFaceCheck = KINON_ShouldPassFaceCheck
+
+local KINON_ParryEngine = {
+	LastAttempt = 0,
+	LastSuccess = 0,
+	SeenAnimators = setmetatable({}, { __mode = "k" }),
+	SeenTools = setmetatable({}, { __mode = "k" }),
+	SeenModels = setmetatable({}, { __mode = "k" }),
+	ActiveClient = nil,
+	ClientModule = nil,
+	ClientHooked = false,
+	WarnedFallback = false,
+	WarnedMissingTool = false,
+}
+
+local KINON_ParryAnimationIds = {
+	["71008020992570"] = true, ["72742711718023"] = true, ["72908958549833"] = true, ["73923929500477"] = true,
+	["74968262036854"] = true, ["75857500533792"] = true, ["76385865186777"] = true, ["76503974441748"] = true,
+	["77081789642514"] = true, ["78432063483146"] = true, ["78935059863801"] = true, ["79935565590141"] = true,
+	["79965656177566"] = true, ["80411309607666"] = true, ["82666958311998"] = true, ["83873880822918"] = true,
+	["84525330720658"] = true, ["85030641905220"] = true, ["89185525343404"] = true, ["92125118598365"] = true,
+	["92362656727126"] = true, ["92554564590253"] = true, ["96839438835309"] = true, ["99472251587670"] = true,
+	["102055678391920"] = true, ["104689417033027"] = true, ["105374834496520"] = true, ["109402730355822"] = true,
+	["111920872708571"] = true, ["112166042383605"] = true, ["112633191985365"] = true, ["112840768179724"] = true,
+	["113255068724446"] = true, ["115244153053858"] = true, ["117042998468241"] = true, ["117207742458428"] = true,
+	["118907603246885"] = true, ["119752564209631"] = true, ["121216847022485"] = true, ["121571390309073"] = true,
+	["122812055447896"] = true, ["123047897844134"] = true, ["123812278891591"] = true, ["124706657239027"] = true,
+	["124735239320776"] = true, ["125224839697689"] = true, ["126081405469607"] = true, ["126497551689502"] = true,
+	["126527634689050"] = true, ["126626340093785"] = true, ["126751859125353"] = true, ["128241974219045"] = true,
+	["129784271201071"] = true, ["130012819736632"] = true, ["130585295123651"] = true, ["130593238885843"] = true,
+	["132817836308238"] = true, ["133002120549396"] = true, ["133881825716964"] = true, ["133963973694098"] = true,
+	["134838390519433"] = true, ["135002183282873"] = true, ["135403091566760"] = true, ["135727476735024"] = true,
+	["136365031119137"] = true, ["137504605181913"] = true, ["137688077908355"] = true, ["137795837089724"] = true,
+	["137846825408335"] = true, ["138045669415653"] = true, ["138720291317243"] = true, ["117187218825161"] = true,
+	["105221485497534"] = true, ["86868198964957"] = true, ["134758728973154"] = true, ["132636403911470"] = true,
+	["125350153877085"] = true, ["2874840706"] = true, ["110850539331763"] = true, ["72042024"] = true,
+	["139369275981139"] = true, ["113691709436161"] = true, ["129626174716003"] = true, ["75618342544502"] = true,
+	["93902163029544"] = true, ["79310600168078"] = true, ["104540716539347"] = true, ["101636125032002"] = true,
+	["125430111937587"] = true, ["81963230963908"] = true, ["84926129581106"] = true, ["83333467665074"] = true,
+	["127417297154354"] = true,
+}
+
+local VD_NO_PARRY_ANIMS = {
+	["101443662521580"] = "Veil Spear Throw 1",
+	["127622545856523"] = "Veil Spear Throw 2",
+	["76744850905644"]  = "Myers Grab",
+	["71001061734896"]  = "Take Out Spear",
+	["129669521834246"] = "Put Away Spear",
+}
+
+local VD_OPTIONAL_ATTACK_ANIMS = {
+	["106871536134254"] = { Name = "Masked Alex Attack", Default = true },
+	["117070354890871"] = { Name = "Masked Alex Lunge", Default = true },
+	["73681849513551"]  = { Name = "Hidden Dash", Default = true },
+	["100014992013740"] = { Name = "Abyswalker Slash", Default = true },
+}
+
+local KINON_IgnoredParryAnimationIds = {
+	["86266790353635"] = true, ["84093948968516"] = true,
+	["102746205979822"] = true, ["99210996402874"] = true,
+	["121108316060822"] = true, ["109928123357793"] = true,
+	["110466971021611"] = true, ["110355011987939"] = true,
+	["135181748009911"] = true, ["77210283630654"] = true,
+	["108211560927158"] = true, ["104192089592095"] = true,
+	["109257644640676"] = true, ["98163597193511"] = true,
+	["111223305405046"] = true, ["75258958842388"] = true,
+	["93136435416899"] = true, ["92098503722633"] = true,
+	["117886494230451"] = true,
+}
+
+local function KINON_AnimationId(animTrack)
+	local id = ""
+	pcall(function() id = tostring(animTrack.Animation.AnimationId):match("%d+") or "" end)
+	return id
+end
+
+local function KINON_IsKillerModel(model)
+	if not model or not model:IsA("Model") or model == LP.Character then return false end
+	if not model:FindFirstChildOfClass("Humanoid") or not model:FindFirstChild("HumanoidRootPart") then return false end
+	local player = Players:GetPlayerFromCharacter(model)
+	if player == LP then return false end
+
+	local function flagged(instance)
+		return instance and (instance:GetAttribute("Role") == "Killer"
+			or instance:GetAttribute("IsKiller") == true)
+	end
+	if flagged(model) or flagged(player) then return true end
+
+	if player and player.Team then
+		local teamName = player.Team.Name:lower()
+		if teamName:find("killer") or teamName:find("slasher")
+			or teamName:find("hunter") or teamName:find("monster") then return true end
+		if not teamName:find("survivor") and not teamName:find("lobby")
+			and not teamName:find("spectat") then return true end
+	end
+
+	local killersFolder = workspace:FindFirstChild("Killers")
+	if killersFolder and model:IsDescendantOf(killersFolder) then return true end
+
+	local name = model.Name:lower()
+	for _, word in ipairs({"zombie","slasher","monster","killer","veil","stalker","masked","abysswalker","hunter"}) do
+		if name:find(word, 1, true) then return true end
+	end
+	return false
+end
+
+local function KINON_GetKillerModels()
+	local result, seen = {}, {}
+	local function add(model)
+		if model and not seen[model] and KINON_IsKillerModel(model) then
+			seen[model] = true
+			table.insert(result, model)
+		end
+	end
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= LP then add(player.Character) end
+	end
+	local killersFolder = workspace:FindFirstChild("Killers")
+	if killersFolder then
+		for _, obj in ipairs(killersFolder:GetDescendants()) do
+			if obj:IsA("Model") then add(obj) end
+		end
+	end
+	for _, obj in ipairs(workspace:GetChildren()) do
+		if obj:IsA("Model") then add(obj) end
+	end
+	return result
+end
+
+local function KINON_GetParryTool()
+	local character = LP.Character
+	local backpack = LP:FindFirstChildOfClass("Backpack")
+	local equipped = tostring(LP:GetAttribute("EquippedItem") or ""):lower()
+	if equipped:find("parry", 1, true) or equipped:find("dagger", 1, true) then
+		if character then
+			local tool = character:FindFirstChild("Parrying Dagger") or character:FindFirstChild("Parry Dagger")
+			if tool then return tool end
+		end
+		if backpack then
+			local tool = backpack:FindFirstChild("Parrying Dagger") or backpack:FindFirstChild("Parry Dagger")
+			if tool then return tool end
+		end
+		return true
+	end
+	local containers = {}
+	if character then table.insert(containers, character) end
+	if backpack then table.insert(containers, backpack) end
+	for _, container in ipairs(containers) do
+		for _, child in ipairs(container:GetChildren()) do
+			local name = child.Name:lower()
+			if name:find("parry", 1, true) or name:find("dagger", 1, true) then return child end
+		end
+	end
+	return nil
+end
+
+local function KINON_FindParryClient()
+	local function usable(value)
+		return type(value) == "table" and type(value.Parry) == "function"
+			and value.tool and value.tool.Parent
+	end
+	if usable(KINON_ParryEngine.ActiveClient) then return KINON_ParryEngine.ActiveClient end
+	if usable(_G.KINON_ActiveParryClient) then
+		KINON_ParryEngine.ActiveClient = _G.KINON_ActiveParryClient
+		return KINON_ParryEngine.ActiveClient
+	end
+	if usable(_G.VD_ActiveParryClient) then
+		KINON_ParryEngine.ActiveClient = _G.VD_ActiveParryClient
+		return KINON_ParryEngine.ActiveClient
+	end
+
+	if not KINON_ParryEngine.ClientModule then
+		pcall(function()
+			local replicated = game:GetService("ReplicatedStorage")
+			local modules = replicated:FindFirstChild("Modules")
+			local items = modules and modules:FindFirstChild("Items")
+			local dagger = items and items:FindFirstChild("ParryingDagger")
+			local moduleScript = dagger and dagger:FindFirstChild("ParryClient")
+			if moduleScript then KINON_ParryEngine.ClientModule = require(moduleScript) end
+		end)
+	end
+
+	local moduleTable = KINON_ParryEngine.ClientModule
+	if type(moduleTable) == "table" and not KINON_ParryEngine.ClientHooked then
+		KINON_ParryEngine.ClientHooked = true
+		pcall(function()
+			local originalNew = moduleTable.new
+			if type(originalNew) == "function" then
+				moduleTable.new = function(...)
+					local client = originalNew(...)
+					KINON_ParryEngine.ActiveClient = client
+					_G.KINON_ActiveParryClient = client
+					_G.VD_ActiveParryClient = client
+					return client
+				end
+			end
+		end)
+	end
+
+	if typeof(getgc) == "function" and tick() - (KINON_ParryEngine.LastGcScan or 0) > 3 then
+		KINON_ParryEngine.LastGcScan = tick()
+		local ok, objects = pcall(function() return getgc(true) end)
+		if ok and type(objects) == "table" then
+			for _, object in ipairs(objects) do
+				if usable(object) then
+					local meta = getmetatable(object)
+					if meta == moduleTable or rawget(object, "parryEvent")
+						or rawget(object, "daggerFolder") or rawget(object, "tool") then
+						KINON_ParryEngine.ActiveClient = object
+						_G.KINON_ActiveParryClient = object
+						_G.VD_ActiveParryClient = object
+						return object
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+task.spawn(function()
+	while not unloaded do
+		if Parry.Enabled or ParryV2.Enabled then pcall(KINON_FindParryClient) end
+		task.wait(1)
+	end
+end)
+
+local function KINON_TryFallbackParry()
+	local fired = false
+	pcall(function()
+		local playerGui = LP:FindFirstChildOfClass("PlayerGui")
+		local survivorGui = playerGui and (playerGui:FindFirstChild("Survivor-mob") or playerGui:FindFirstChild("Survivor"))
+		local controls = survivorGui and survivorGui:FindFirstChild("Controls")
+		local actionButton = controls and (controls:FindFirstChild("Gui-mob") or controls:FindFirstChild("action"))
+		if actionButton then
+			if typeof(firesignal) == "function" then
+				pcall(function() firesignal(actionButton.MouseButton1Down) end)
+				task.defer(function() pcall(function() firesignal(actionButton.MouseButton1Up) end) end)
+				fired = true
+			end
+			if typeof(getconnections) == "function" then
+				local okDown, downLinks = pcall(function() return getconnections(actionButton.MouseButton1Down) end)
+				if okDown and type(downLinks) == "table" then
+					for _, link in ipairs(downLinks) do pcall(function() link:Fire(); fired = true end) end
+				end
+				local okUp, upLinks = pcall(function() return getconnections(actionButton.MouseButton1Up) end)
+				if okUp and type(upLinks) == "table" then
+					task.defer(function()
+						for _, link in ipairs(upLinks) do pcall(function() link:Fire() end) end
+					end)
+				end
+			end
+		end
+	end)
+
+	local tool = KINON_GetParryTool()
+	if typeof(tool) == "Instance" and tool:IsA("Tool") then
+		pcall(function() tool:Activate(); fired = true end)
+	end
+
+	pcall(function()
+		local character = LP.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			local animator = humanoid:FindFirstChildOfClass("Animator") or humanoid
+			local toolObj = typeof(tool) == "Instance" and tool or nil
+			local animId = toolObj and toolObj:GetAttribute("useanim") or "109133187196613"
+			local numericId = tostring(animId):match("%d+")
+			if numericId and numericId ~= "" then
+				local animation = Instance.new("Animation")
+				animation.AnimationId = "rbxassetid://" .. numericId
+				local animTrack = animator:LoadAnimation(animation)
+				animTrack.Priority = Enum.AnimationPriority.Action
+				animTrack:Play()
+				fired = true
+			end
+		end
+	end)
+	return fired
+end
+
+local KINON_Busy = { HoldingPrompt = false, HoldSince = 0, UntilTime = 0 }
+do
+	local PPS = game:GetService("ProximityPromptService")
+	track(PPS.PromptButtonHoldBegan:Connect(function(_, player)
+		if player == LP then KINON_Busy.HoldingPrompt = true; KINON_Busy.HoldSince = tick() end
+	end))
+	track(PPS.PromptButtonHoldEnded:Connect(function(_, player)
+		if player == LP then
+			KINON_Busy.HoldingPrompt = false
+			KINON_Busy.UntilTime = math.max(KINON_Busy.UntilTime, tick() + 0.35)
+		end
+	end))
+	track(PPS.PromptTriggered:Connect(function(_, player)
+		if player == LP then
+			KINON_Busy.HoldingPrompt = false
+			KINON_Busy.UntilTime = tick() + 1.2
+		end
+	end))
+end
+
+local KINON_BusyAttrPatterns = {
+	"repair","generator","unhook","hooking","rescu","gate","vault","pallet","dropping","interact","opening",
+}
+local KINON_BusyAnimKeywords = {
+	"repair","generator","unhook","rescue","hook","gate","exit","vault","window","pallet","drop",
+}
+
+local function KINON_AttrBusy(instance)
+	local ok, attrs = pcall(function() return instance:GetAttributes() end)
+	if not ok or type(attrs) ~= "table" then return false end
+	for name, value in pairs(attrs) do
+		if value == true then
+			local n = string.lower(tostring(name))
+			if not (n:find("^can") or n:find("^has") or n:find("^allow")) then
+				for _, pattern in ipairs(KINON_BusyAttrPatterns) do
+					if n:find(pattern, 1, true) then return true end
+				end
+			end
+		end
+	end
+	return false
+end
+
+local function KINON_IsBusyInteracting()
+	local now = tick()
+	if now < KINON_Busy.UntilTime then return true end
+	if KINON_Busy.HoldingPrompt and now - KINON_Busy.HoldSince < 15 then return true end
+	local character = LP.Character
+	if not character then return false end
+	if KINON_AttrBusy(character) or KINON_AttrBusy(LP) then return true end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+	if animator then
+		local ok, tracks = pcall(function() return animator:GetPlayingAnimationTracks() end)
+		if ok and tracks then
+			for _, playing in ipairs(tracks) do
+				local label = ""
+				pcall(function()
+					local pr = playing.Priority
+					if pr == Enum.AnimationPriority.Action or pr == Enum.AnimationPriority.Action2
+						or pr == Enum.AnimationPriority.Action3 or pr == Enum.AnimationPriority.Action4 then
+						label = string.lower(tostring(playing.Name) .. " "
+							.. tostring(playing.Animation and playing.Animation.Name or ""))
+					end
+				end)
+				if label ~= "" and not label:find("parry", 1, true) and not label:find("dagger", 1, true) then
+					for _, keyword in ipairs(KINON_BusyAnimKeywords) do
+						if label:find(keyword, 1, true) then return true end
+					end
+				end
+			end
+		end
+	end
+	return false
+end
+
+local function KINON_TryParry(reason, killerRoot)
+	if unloaded or not (Parry.Enabled or ParryV2.Enabled) then return false end
+	if tick() - KINON_ParryEngine.LastAttempt < 0.012 then return false end
+	if not KINON_GetParryTool() then return false end
+	if KINON_IsBusyInteracting() then return false end
+
+	local character = LP.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not character or not humanoid or humanoid.Health <= 0 then return false end
+	if character:GetAttribute("Knocked") == true or LP:GetAttribute("Knocked") == true
+		or character:GetAttribute("IsHooked") == true or LP:GetAttribute("IsHooked") == true
+		or character:GetAttribute("IsCarried") == true or LP:GetAttribute("IsCarried") == true
+		or character:GetAttribute("IsDead") == true or LP:GetAttribute("IsDead") == true then
+		return false
+	end
+
+	local client = KINON_FindParryClient()
+	if client and (client.isParryOnCooldown or client.isParryResolving) then return false end
+	if tick() - (KINON_ParryEngine.LastSuccess or 0) < 0.10 then return false end
+
+	KINON_ParryEngine.LastAttempt = tick()
+
+	if client then
+		local ok, result = pcall(function()
+			if client.character ~= character and type(client._bindCharacter) == "function" then
+				pcall(function() client:_bindCharacter(character) end)
+			end
+			return client:Parry()
+		end)
+		if ok and result ~= false then
+			KINON_ParryEngine.LastSuccess = tick()
+			return true
+		end
+		return false
+	end
+
+	local fallbackOk, fallbackFired = pcall(KINON_TryFallbackParry)
+	if fallbackOk and fallbackFired then
+		KINON_ParryEngine.LastSuccess = tick()
+		if not KINON_ParryEngine.WarnedFallback then
+			KINON_ParryEngine.WarnedFallback = true
+			warn("[KINON Auto Parry] Using GUI/tool fallback; ParryClient instance was not available yet.")
+		end
+		return true
+	end
+	if not KINON_ParryEngine.WarnedFallback then
+		KINON_ParryEngine.WarnedFallback = true
+		warn("[KINON Auto Parry] Attack detected, but no active ParryClient or usable game parry button was found.")
+	end
+	return false
+end
+
+local function KINON_InRangeAndFacing(killerRoot, playerRoot)
+	if not killerRoot or not playerRoot then return false end
+	local distance = (killerRoot.Position - playerRoot.Position).Magnitude
+	local range = math.clamp(tonumber(Parry.Range) or 14, 5, 35)
+	if distance > range then return false end
+	if not KINON_ShouldPassFaceCheck(killerRoot, playerRoot) then return false end
+	return true
+end
+
+local function KINON_HandleAttackTrack(animTrack, model)
+	if not (Parry.Enabled or ParryV2.Enabled) or not animTrack or not model or not model.Parent then return end
+	local animationId = KINON_AnimationId(animTrack)
+	if animationId == "" or KINON_IgnoredParryAnimationIds[animationId] then return end
+	if VD_NO_PARRY_ANIMS[animationId] then return end
+
+	local modelName = string.lower(tostring(model.Name or ""))
+	if modelName:find("veil", 1, true) then
+		local trackName = ""
+		pcall(function() trackName = string.lower(tostring(animTrack.Name or "")) end)
+		local animationName = ""
+		pcall(function() animationName = string.lower(tostring(animTrack.Animation and animTrack.Animation.Name or "")) end)
+		local label = trackName .. " " .. animationName
+		if label:find("spear", 1, true) or label:find("throw", 1, true)
+			or label:find("charge", 1, true) then return end
+	end
+
+	local optionalAttack = VD_OPTIONAL_ATTACK_ANIMS[animationId]
+	if optionalAttack and VD_SkipParryOptions[animationId] == true then return end
+	local knownAttack = KINON_ParryAnimationIds[animationId] == true
+		or (optionalAttack ~= nil and optionalAttack.Default == true)
+	if not knownAttack then return end
+
+	local okTime, timePosition = pcall(function() return animTrack.TimePosition or 0 end)
+	if okTime and timePosition > 0.45 then return end
+
+	task.spawn(function()
+		local startTime = tick()
+		local lastPos, lastT, vel
+		repeat
+			if unloaded or not (Parry.Enabled or ParryV2.Enabled) or not animTrack.IsPlaying then break end
+			local currentTime = 0
+			pcall(function() currentTime = animTrack.TimePosition or 0 end)
+			if currentTime > 0.45 then break end
+			local playerRoot = getRoot()
+			local killerRoot = model:FindFirstChild("HumanoidRootPart")
+			if killerRoot then
+				local nowT = tick()
+				local pos = killerRoot.Position
+				if lastPos and nowT > lastT then
+					local v = (pos - lastPos) / (nowT - lastT)
+					vel = vel and (vel * 0.5 + v * 0.5) or v
+				end
+				lastPos, lastT = pos, nowT
+			end
+			if playerRoot and killerRoot then
+				local pass = false
+				if Parry.Enabled then
+					pass = KINON_InRangeAndFacing(killerRoot, playerRoot)
+				elseif ParryV2.Enabled then
+					pass = KINON_InRangeAndFacingV2(killerRoot, playerRoot, nil, vel)
+				end
+				if pass and KINON_TryParry("Animation " .. animationId, killerRoot) then return end
+			end
+			RunService.Heartbeat:Wait()
+		until tick() - startTime >= 0.45
+	end)
+end
+
+local function KINON_HookAnimator(animator, model)
+	if not animator or KINON_ParryEngine.SeenAnimators[animator] then return end
+	KINON_ParryEngine.SeenAnimators[animator] = true
+	local ok, connection = pcall(function()
+		return animator.AnimationPlayed:Connect(function(animTrack)
+			pcall(KINON_HandleAttackTrack, animTrack, model)
+		end)
+	end)
+	if ok and connection then track(connection) end
+	pcall(function()
+		for _, playingTrack in ipairs(animator:GetPlayingAnimationTracks()) do
+			task.spawn(KINON_HandleAttackTrack, playingTrack, model)
+		end
+	end)
+end
+
+local function KINON_HookKillerModel(model)
+	if not model or KINON_ParryEngine.SeenModels[model] then return end
+	KINON_ParryEngine.SeenModels[model] = true
+	local function hookChild(child)
+		if child:IsA("Humanoid") then
+			local animator = child:FindFirstChildOfClass("Animator")
+			if animator then KINON_HookAnimator(animator, model) end
+			track(child.ChildAdded:Connect(function(newChild)
+				if newChild:IsA("Animator") then KINON_HookAnimator(newChild, model) end
+			end))
+		end
+	end
+	for _, child in ipairs(model:GetChildren()) do pcall(hookChild, child) end
+	track(model.ChildAdded:Connect(function(child) pcall(hookChild, child) end))
+end
+
+track(Players.PlayerAdded:Connect(function(player)
+	if player == LP then return end
+	track(player.CharacterAdded:Connect(function(character)
+		task.defer(function()
+			if character and KINON_IsKillerModel(character) then KINON_HookKillerModel(character) end
+		end)
+	end))
+end))
+for _, player in ipairs(Players:GetPlayers()) do
+	if player ~= LP then
+		track(player.CharacterAdded:Connect(function(character)
+			task.defer(function()
+				if character and KINON_IsKillerModel(character) then KINON_HookKillerModel(character) end
+			end)
+		end))
+	end
+end
+
+task.spawn(function()
+	while not unloaded do
+		if Parry.Enabled or ParryV2.Enabled then
+			local tool = KINON_GetParryTool()
+			if LP.Character and not tool and not KINON_ParryEngine.WarnedMissingTool then
+				KINON_ParryEngine.WarnedMissingTool = true
+			elseif tool then
+				KINON_ParryEngine.WarnedMissingTool = false
+			end
+			local playerRoot = getRoot()
+			for _, model in ipairs(KINON_GetKillerModels()) do
+				pcall(KINON_HookKillerModel, model)
+				local killerRoot = model:FindFirstChild("HumanoidRootPart")
+				if playerRoot and killerRoot and (killerRoot.Position - playerRoot.Position).Magnitude <= 70 then
+					if typeof(tool) == "Instance" and tool:IsA("Tool") and tool.Parent ~= LP.Character then
+						local humanoid = getHumanoid()
+						if humanoid then pcall(function() humanoid:EquipTool(tool) end) end
+					end
+					local killerHumanoid = model:FindFirstChildOfClass("Humanoid")
+					local animator = killerHumanoid and killerHumanoid:FindFirstChildOfClass("Animator")
+					if animator then KINON_HookAnimator(animator, model) end
+				end
+			end
+			task.wait(0.1)
+		else
+			task.wait(0.35)
+		end
+	end
+end)
+
+local function clearParryCircle()
+	if ParryCircleAdornment then ParryCircleAdornment:Destroy(); ParryCircleAdornment = nil end
+	if ParryCirclePart then ParryCirclePart:Destroy(); ParryCirclePart = nil end
+end
+
+track(RunService.Heartbeat:Connect(function()
+	local character = LP.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	local activeParry
+	if Parry.Enabled and Parry.CircleVisible then
+		activeParry = Parry
+	elseif ParryV2.Enabled and ParryV2.CircleVisible then
+		activeParry = ParryV2
+	end
+	if not activeParry or not root then
+		clearParryCircle()
+		return
+	end
+	if not ParryCirclePart or not ParryCirclePart.Parent then
+		ParryCirclePart = Instance.new("Part")
+		ParryCirclePart.Name = "KINON_ParryCircleAnchor"
+		ParryCirclePart.Anchored = true
+		ParryCirclePart.CanCollide = false
+		ParryCirclePart.CanTouch = false
+		ParryCirclePart.CanQuery = false
+		ParryCirclePart.Transparency = 1
+		ParryCirclePart.Size = Vector3.new(0.1, 0.1, 0.1)
+		ParryCirclePart.Parent = workspace
+
+		ParryCircleAdornment = Instance.new("CylinderHandleAdornment")
+		ParryCircleAdornment.Name = "KINON_ParryCircle"
+		ParryCircleAdornment.Adornee = ParryCirclePart
+		ParryCircleAdornment.Height = 0.05
+		ParryCircleAdornment.AlwaysOnTop = false
+		ParryCircleAdornment.ZIndex = 0
+		ParryCircleAdornment.Parent = ParryCirclePart
+	end
+	local radius = math.clamp(tonumber(activeParry.Range) or 14, 5, 35)
+	ParryCirclePart.CFrame = CFrame.new(root.Position + Vector3.new(0, -2.8, 0))
+	ParryCircleAdornment.CFrame = CFrame.Angles(math.rad(90), 0, 0)
+	ParryCircleAdornment.Radius = radius
+	ParryCircleAdornment.InnerRadius = math.max(0.1, radius - 0.12)
+	ParryCircleAdornment.Color3 = activeParry.RangeColor
+	ParryCircleAdornment.Transparency = 0.15
+end))
+
+local Main = new("CanvasGroup", {
+	Name = "Main",
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(WIDTH, HEADER_H + 4 * CARD_H + 3 * 6 + 16),
+	BackgroundColor3 = C.Panel,
+	BackgroundTransparency = 0.04,
+	GroupTransparency = 0,
+}, Gui)
+corner(Main, 16)
+local mainStroke = new("UIStroke", { Color = WHITE, Transparency = 0.6, Thickness = 1 }, Main)
+new("UIGradient", {
+	Color = ColorSequence.new(WHITE, Color3.fromRGB(60, 60, 60)),
+	Rotation = 45,
+}, mainStroke)
+
+local updateMainHeight
+local Scale = new("UIScale", {}, Main)
+local function updateScale()
+	local cam = workspace.CurrentCamera
+	if not cam then return end
+	local vp = cam.ViewportSize
+	Scale.Scale = math.clamp(
+		math.min((vp.X - 24) / WIDTH, (vp.Y - 24) / (HEADER_H + MAX_BODY_H)),
+		0.5, 0.9
+	)
+	if updateMainHeight then updateMainHeight() end
+end
+updateScale()
+if workspace.CurrentCamera then
+	track(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale))
+end
+
+local Header = new("Frame", {
+	Name = "Header",
+	Size = UDim2.new(1, 0, 0, HEADER_H),
+	BackgroundTransparency = 1,
+}, Main)
+
+local dot = new("Frame", {
+	AnchorPoint = Vector2.new(0, 0.5),
+	Position = UDim2.new(0, 18, 0.5, 0),
+	Size = UDim2.fromOffset(10, 10),
+	BackgroundColor3 = WHITE,
+}, Header)
+corner(dot, 5)
+
+new("TextLabel", {
+	Position = UDim2.new(0, 38, 0, 7),
+	Size = UDim2.new(1, -190, 0, 18),
+	BackgroundTransparency = 1,
+	Text = HUB_NAME,
+	TextColor3 = C.Text,
+	Font = Enum.Font.GothamBold,
+	TextSize = 15,
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, Header)
+new("TextLabel", {
+	Position = UDim2.new(0, 38, 0, 25),
+	Size = UDim2.new(1, -190, 0, 12),
+	BackgroundTransparency = 1,
+	Text = "Beta  \226\128\162  tap a card to open its options",
+	TextColor3 = C.Sub,
+	Font = Enum.Font.Gotham,
+	TextSize = 10,
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, Header)
+
+
+local perfBox = new("Frame", {
+	Name = "PerformanceStatsHUD",
+	AnchorPoint = Vector2.new(0, 0),
+	Position = UDim2.new(0.5, 174, 0, 18),
+	Size = UDim2.fromOffset(124, 25),
+	BackgroundTransparency = 1,
+	ZIndex = 50,
+}, Gui)
+
+local perfLayout = new("UIListLayout", {
+	FillDirection = Enum.FillDirection.Horizontal,
+	HorizontalAlignment = Enum.HorizontalAlignment.Left,
+	VerticalAlignment = Enum.VerticalAlignment.Center,
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	Padding = UDim.new(0, 5),
+}, perfBox)
+
+local function makePerfPill(name, initialText, order, width)
+	local pill = new("Frame", {
+		Name = name .. "Pill",
+		Size = UDim2.fromOffset(width, 23),
+		BackgroundColor3 = Color3.fromRGB(24, 27, 31),
+		BackgroundTransparency = 0.08,
+		BorderSizePixel = 0,
+		LayoutOrder = order,
+		ZIndex = 50,
+	}, perfBox)
+	corner(pill, 12)
+	local stroke = new("UIStroke", {
+		Color = Color3.fromRGB(80, 85, 92),
+		Transparency = 0.35,
+		Thickness = 1,
+	}, pill)
+	local dot = new("Frame", {
+		Name = "StatusDot",
+		Position = UDim2.new(0, 7, 0.5, -3),
+		Size = UDim2.fromOffset(6, 6),
+		BackgroundColor3 = Color3.fromRGB(65, 220, 105),
+		BorderSizePixel = 0,
+		ZIndex = 52,
+	}, pill)
+	corner(dot, 5)
+	local label = new("TextLabel", {
+		Name = "Value",
+		Position = UDim2.new(0, 17, 0, 0),
+		Size = UDim2.new(1, -20, 1, 0),
+		BackgroundTransparency = 1,
+		Text = initialText,
+		TextColor3 = Color3.fromRGB(245, 247, 250),
+		Font = Enum.Font.GothamBold,
+		TextSize = 10,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		ZIndex = 52,
+	}, pill)
+	return label, dot, pill, stroke
+end
+
+local fpsLabel, fpsDot, fpsPill = makePerfPill("FPS", "FPS --", 1, 54)
+local pingLabel, pingDot, pingPill = makePerfPill("PING", "-- ms", 2, 60)
+
+local GOOD = Color3.fromRGB(55, 210, 115)
+local WARN = Color3.fromRGB(245, 190, 55)
+local BAD = Color3.fromRGB(240, 75, 75)
+
+local function setPillStatus(label, dot, pill, color, value)
+	label.Text = value
+	dot.BackgroundColor3 = color
+	pill.BackgroundColor3 = Color3.fromRGB(
+		math.floor(24 + color.R * 34),
+		math.floor(27 + color.G * 34),
+		math.floor(31 + color.B * 34)
+	)
+end
+
+local smoothedFPS = 60
+local pingMs = 0
+local pingClock = 0
+local uiClock = 0
+track(RunService.RenderStepped:Connect(function(dt)
+	if unloaded or not Gui.Parent then return end
+	if dt > 0 then
+		local instantFPS = 1 / dt
+		smoothedFPS = smoothedFPS * 0.82 + instantFPS * 0.18
+	end
+	uiClock += dt
+	pingClock += dt
+	if pingClock >= 1 then
+		pingClock = 0
+		local ok, value = pcall(function() return LP:GetNetworkPing() end)
+		if ok and type(value) == "number" then
+			pingMs = math.max(0, math.floor(value * 1000 + 0.5))
+		end
+	end
+	if uiClock >= 0.25 then
+		uiClock = 0
+		local fps = math.floor(smoothedFPS + 0.5)
+		local fpsColor = fps >= 50 and GOOD or (fps >= 30 and WARN or BAD)
+		local pingColor = pingMs < 100 and GOOD or (pingMs < 180 and WARN or BAD)
+		setPillStatus(fpsLabel, fpsDot, fpsPill, fpsColor, "FPS " .. tostring(fps))
+		setPillStatus(pingLabel, pingDot, pingPill, pingColor, tostring(pingMs) .. " ms")
+	end
+end))
+
+local headerBtns = new("Frame", {
+	AnchorPoint = Vector2.new(1, 0.5),
+	Position = UDim2.new(1, -10, 0.5, 0),
+	Size = UDim2.new(0, 0, 0, 30),
+	AutomaticSize = Enum.AutomaticSize.X,
+	BackgroundTransparency = 1,
+}, Header)
+new("UIListLayout", {
+	FillDirection = Enum.FillDirection.Horizontal,
+	HorizontalAlignment = Enum.HorizontalAlignment.Right,
+	VerticalAlignment = Enum.VerticalAlignment.Center,
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	Padding = UDim.new(0, 4),
+}, headerBtns)
+
+local function headerBtn(iconName, order)
+	local b = new("TextButton", {
+		Size = UDim2.fromOffset(30, 30),
+		BackgroundTransparency = 1,
+		Text = "",
+		LayoutOrder = order,
+	}, headerBtns)
+	corner(b, 8)
+	local ic = icon(iconName, 18, C.Muted, b)
+	b.MouseEnter:Connect(function()
+		TweenService:Create(b, TweenInfo.new(0.12), { BackgroundTransparency = 0.88, BackgroundColor3 = WHITE }):Play()
+		tweenIconColor(ic, C.Text)
+	end)
+	b.MouseLeave:Connect(function()
+		TweenService:Create(b, TweenInfo.new(0.12), { BackgroundTransparency = 1 }):Play()
+		tweenIconColor(ic, C.Muted)
+	end)
+	return b
+end
+local minBtn   = headerBtn("minus", 1)
+local closeBtn = headerBtn("x", 2)
+State.Actions = {}
+minBtn.MouseButton1Click:Connect(function()
+	local f = State.Actions.minimize
+	if f then f() end
+end)
+closeBtn.MouseButton1Click:Connect(function()
+	local f = State.Actions.close
+	if f then f() end
+end)
+
+new("Frame", {
+	Position = UDim2.new(0, 16, 0, HEADER_H - 1),
+	Size = UDim2.new(1, -32, 0, 1),
+	BackgroundColor3 = WHITE,
+	BackgroundTransparency = 0.9,
+	BorderSizePixel = 0,
+}, Main)
+
+local Body = new("ScrollingFrame", {
+	Name = "Body",
+	Position = UDim2.new(0, 0, 0, HEADER_H),
+	Size = UDim2.new(1, 0, 1, -HEADER_H),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ScrollBarThickness = 3,
+	ScrollBarImageColor3 = Color3.fromRGB(200, 200, 200),
+	CanvasSize = UDim2.new(),
+	AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	ScrollingDirection = Enum.ScrollingDirection.Y,
+}, Main)
+local List = new("UIListLayout", {
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	Padding = UDim.new(0, 6),
+}, Body)
+new("UIPadding", {
+	PaddingTop = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8),
+	PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 12),
+}, Body)
+
+local minimized, busy, savedPos = false, false, nil
+
+local function fullHeight()
+	local content = List.AbsoluteContentSize.Y / math.max(Scale.Scale, 0.01) + 16
+	return HEADER_H + math.min(content, MAX_BODY_H)
+end
+
+updateMainHeight = function()
+	if minimized or busy then return end
+	Main.Size = UDim2.fromOffset(WIDTH, fullHeight())
+end
+track(List:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateMainHeight))
+
+local RegHook = {}
+local Reg = { list = {}, ids = {}, skip = false }
+
+local function stylePill(p, selected)
+	p.BackgroundColor3 = selected and C.Accent or C.Surface
+	p.TextColor3 = selected and C.OnAccent or C.Muted
+end
+
+local function pill(parent, text, width, order, interactive)
+	local p = new(interactive and "TextButton" or "TextLabel", {
+		Size = UDim2.fromOffset(width, 28),
+		BackgroundColor3 = C.Surface,
+		Text = text,
+		TextColor3 = C.Muted,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+		LayoutOrder = order,
+	}, parent)
+	corner(p, 8)
+	return p
+end
+
+local function pillIcon(parent, iconName, width, order)
+	local p = pill(parent, "", width, order, true)
+	icon(iconName, 14, C.Text, p)
+	return p
+end
+
+local function addCard(order, iconName, title, subtitle, key, onToggle)
+	local card = { rows = 0, expanded = false }
+	local s = State[key]
+
+	local frame = new("Frame", {
+		Name = title,
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = C.Card,
+		LayoutOrder = order,
+	}, Body)
+	corner(frame, 12)
+	local cardStroke = new("UIStroke", { Color = WHITE, Transparency = 0.92, Thickness = 1 }, frame)
+	new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, frame)
+
+	local head = new("Frame", {
+		Name = "Head",
+		Size = UDim2.new(1, 0, 0, CARD_H),
+		BackgroundTransparency = 1,
+		LayoutOrder = 1,
+	}, frame)
+
+	local rowBtn = new("TextButton", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		Text = "",
+		AutoButtonColor = false,
+	}, head)
+
+	local iconBox = new("Frame", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 10, 0.5, 0),
+		Size = UDim2.fromOffset(38, 38),
+		BackgroundColor3 = C.Surface,
+	}, head)
+	corner(iconBox, 10)
+	local cardIcon = icon(iconName, 20, C.Text, iconBox)
+
+	new("TextLabel", {
+		Position = UDim2.new(0, 58, 0.5, -19),
+		Size = UDim2.new(1, -170, 0, 20),
+		BackgroundTransparency = 1,
+		Text = title,
+		TextColor3 = C.Text,
+		Font = Enum.Font.GothamBold,
+		TextSize = 14,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}, head)
+
+	card.sub = new("TextLabel", {
+		Position = UDim2.new(0, 58, 0.5, 1),
+		Size = UDim2.new(1, -170, 0, 16),
+		BackgroundTransparency = 1,
+		Text = subtitle,
+		TextColor3 = C.Sub,
+		Font = Enum.Font.Gotham,
+		TextSize = 12,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}, head)
+
+	local right = new("Frame", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -10, 0.5, 0),
+		Size = UDim2.new(0, 0, 0, 30),
+		AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundTransparency = 1,
+	}, head)
+	new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Padding = UDim.new(0, 6),
+	}, right)
+
+	card.toggle = pill(right, "OFF", 56, 1, true)
+	local arrowBtn = new("TextButton", {
+		Size = UDim2.fromOffset(28, 28),
+		BackgroundTransparency = 1,
+		Text = "",
+		LayoutOrder = 2,
+	}, right)
+	card.arrow = icon("chevron-down", 18, C.Muted, arrowBtn)
+
+	card.Opts = new("Frame", {
+		Name = "Opts",
+		Size = UDim2.new(1, 0, 0, 0),
+		BackgroundTransparency = 1,
+		ClipsDescendants = true,
+		LayoutOrder = 2,
+	}, frame)
+	new("Frame", {
+		Position = UDim2.new(0, 12, 0, 0),
+		Size = UDim2.new(1, -24, 0, 1),
+		BackgroundColor3 = WHITE,
+		BackgroundTransparency = 0.92,
+		BorderSizePixel = 0,
+	}, card.Opts)
+	card.Rows = new("Frame", {
+		Position = UDim2.new(0, 14, 0, 9),
+		Size = UDim2.new(1, -28, 1, -9),
+		BackgroundTransparency = 1,
+	}, card.Opts)
+	new("UIListLayout", {
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Padding = UDim.new(0, 4),
+	}, card.Rows)
+
+	local function setExpanded(on)
+		card.expanded = on
+		local h = 0
+		if on then h = 9 + card.rows * OPT_H + math.max(card.rows - 1, 0) * 4 + 10 end
+		local ti = TweenInfo.new(0.22, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+		TweenService:Create(card.Opts, ti, { Size = UDim2.new(1, 0, 0, h) }):Play()
+		TweenService:Create(card.arrow, ti, { Rotation = on and 180 or 0 }):Play()
+		tweenIconColor(card.arrow, on and C.Text or C.Muted)
+	end
+	rowBtn.MouseEnter:Connect(function()
+		TweenService:Create(frame, TweenInfo.new(0.12), { BackgroundColor3 = Color3.fromRGB(24, 24, 24) }):Play()
+	end)
+	rowBtn.MouseLeave:Connect(function()
+		TweenService:Create(frame, TweenInfo.new(0.12), { BackgroundColor3 = C.Card }):Play()
+	end)
+	rowBtn.MouseButton1Click:Connect(function() setExpanded(not card.expanded) end)
+	arrowBtn.MouseButton1Click:Connect(function() setExpanded(not card.expanded) end)
+
+	local function refreshEnabled()
+		TweenService:Create(iconBox, TweenInfo.new(0.18), {
+			BackgroundColor3 = s.Enabled and C.Accent or C.Surface,
+		}):Play()
+		tweenIconColor(cardIcon, s.Enabled and C.OnAccent or C.Text)
+		card.toggle.Text = s.Enabled and "ON" or "OFF"
+		TweenService:Create(card.toggle, TweenInfo.new(0.18), {
+			BackgroundColor3 = s.Enabled and C.Accent or C.Surface,
+			TextColor3 = s.Enabled and C.OnAccent or C.Muted,
+		}):Play()
+		local ti = TweenInfo.new(0.18)
+		TweenService:Create(cardStroke, ti, { Transparency = s.Enabled and 0.6 or 0.92 }):Play()
+	end
+	card.refresh = refreshEnabled
+	card.toggle.MouseButton1Click:Connect(function()
+		s.Enabled = not s.Enabled
+		refreshEnabled()
+		if onToggle then onToggle(s.Enabled) else fire(key) end
+	end)
+	refreshEnabled()
+
+	return card
+end
+
+local function addOption(card, label, iconName, wide)
+	card.rows = card.rows + 1
+	local row = new("Frame", {
+		Size = UDim2.new(1, 0, 0, OPT_H),
+		BackgroundColor3 = WHITE,
+		BackgroundTransparency = 1,
+		LayoutOrder = card.rows,
+	}, card.Rows)
+	corner(row, 8)
+
+	local rowBtn = new("TextButton", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		Text = "",
+		AutoButtonColor = false,
+	}, row)
+	rowBtn.MouseEnter:Connect(function()
+		TweenService:Create(row, TweenInfo.new(0.12), { BackgroundTransparency = 0.95 }):Play()
+	end)
+	rowBtn.MouseLeave:Connect(function()
+		TweenService:Create(row, TweenInfo.new(0.12), { BackgroundTransparency = 1 }):Play()
+	end)
+
+	local x = 8
+	if iconName then
+		icon(iconName, 16, C.Muted, row, {
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.new(0, 8, 0.5, 0),
+		})
+		x = 34
+	end
+
+	new("TextLabel", {
+		Position = UDim2.new(0, x, 0, 0),
+		Size = wide and UDim2.new(1, -(x + (type(wide) == "number" and wide or 42)), 1, 0) or UDim2.new(0.5, -x, 1, 0),
+		BackgroundTransparency = 1,
+		Text = label,
+		TextColor3 = C.Text,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+	}, row)
+
+	local ctrl = new("Frame", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -8, 0.5, 0),
+		Size = UDim2.new(0, 0, 0, 28),
+		AutomaticSize = Enum.AutomaticSize.X,
+		BackgroundTransparency = 1,
+	}, row)
+	new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Padding = UDim.new(0, 6),
+	}, ctrl)
+	return ctrl, rowBtn
+end
+
+local function addSegment(card, label, iconName, values, fmt, width, get, set)
+	local ctrl = addOption(card, label, iconName)
+	local btns = {}
+	local function refresh()
+		for v, b in pairs(btns) do stylePill(b, get() == v) end
+	end
+	for i, v in ipairs(values) do
+		local b = pill(ctrl, fmt(v), width, i, true)
+		btns[v] = b
+		b.MouseButton1Click:Connect(function() set(v); refresh() end)
+	end
+	refresh()
+	RegHook.r = refresh
+end
+
+local function addDropdown(card, label, iconName, values, fmt, get, set, buttonWidth)
+	local ctrl = addOption(card, label, iconName)
+	local btn = new("TextButton", {
+		Size = UDim2.fromOffset(math.clamp(tonumber(buttonWidth) or 104, 96, 180), 28),
+		BackgroundColor3 = C.Surface,
+		Text = "",
+		AutoButtonColor = false,
+		LayoutOrder = 1,
+	}, ctrl)
+	corner(btn, 8)
+	local lbl = new("TextLabel", {
+		Position = UDim2.new(0, 10, 0, 0),
+		Size = UDim2.new(1, -30, 1, 0),
+		BackgroundTransparency = 1,
+		TextColor3 = C.Text,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+	}, btn)
+	local arrow = icon("chevron-down", 14, C.Muted, btn, {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -8, 0.5, 0),
+	})
+	local function render() lbl.Text = fmt(get()) end
+	render()
+	RegHook.r = render
+
+	local blocker
+	local function close()
+		if blocker then blocker:Destroy(); blocker = nil end
+		TweenService:Create(arrow, TweenInfo.new(0.15), { Rotation = 0 }):Play()
+	end
+	local function open()
+		if blocker then return close() end
+		local sc = Scale.Scale
+		local itemH, pad = 30, 4
+		local w = btn.AbsoluteSize.X / sc
+		local h = #values * itemH + (#values - 1) * 2 + pad * 2
+		local vp = Gui.AbsoluteSize
+		h = math.min(h, math.max(120, math.floor(vp.Y / sc * 0.5)))
+		local pos = btn.AbsolutePosition
+		local below = pos.Y + btn.AbsoluteSize.Y + 4 + h * sc <= vp.Y - 8
+
+		blocker = new("TextButton", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			Text = "",
+			AutoButtonColor = false,
+			ZIndex = 60,
+		}, Gui)
+		blocker.MouseButton1Click:Connect(close)
+
+		local anchor = new("Frame", {
+			AnchorPoint = Vector2.new(0, below and 0 or 1),
+			Position = UDim2.fromOffset(pos.X, below and (pos.Y + btn.AbsoluteSize.Y + 4) or (pos.Y - 4)),
+			Size = UDim2.fromOffset(0, 0),
+			BackgroundTransparency = 1,
+		}, blocker)
+		local popup = new("ScrollingFrame", {
+			AnchorPoint = Vector2.new(0, below and 0 or 1),
+			Size = UDim2.fromOffset(w, 0),
+			BackgroundColor3 = C.Card,
+			BorderSizePixel = 0,
+			ClipsDescendants = true,
+			CanvasSize = UDim2.new(),
+			AutomaticCanvasSize = Enum.AutomaticSize.Y,
+			ScrollBarThickness = 3,
+			ScrollingDirection = Enum.ScrollingDirection.Y,
+		}, anchor)
+		new("UIScale", { Scale = sc }, popup)
+		corner(popup, 8)
+		new("UIStroke", { Color = WHITE, Transparency = 0.75, Thickness = 1 }, popup)
+		new("UIPadding", {
+			PaddingTop = UDim.new(0, pad), PaddingBottom = UDim.new(0, pad),
+			PaddingLeft = UDim.new(0, pad), PaddingRight = UDim.new(0, pad),
+		}, popup)
+		new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2) }, popup)
+
+		for i, v in ipairs(values) do
+			local selected = get() == v
+			local item = new("TextButton", {
+				Size = UDim2.new(1, 0, 0, itemH),
+				BackgroundColor3 = selected and C.Accent or C.Card,
+				Text = fmt(v),
+				TextColor3 = selected and C.OnAccent or C.Text,
+				Font = Enum.Font.GothamMedium,
+				TextSize = 12,
+				TextXAlignment = buttonWidth and Enum.TextXAlignment.Left or Enum.TextXAlignment.Center,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				AutoButtonColor = false,
+				LayoutOrder = i,
+			}, popup)
+			if buttonWidth then
+				new("UIPadding", {
+					PaddingLeft = UDim.new(0, 8),
+					PaddingRight = UDim.new(0, 8),
+				}, item)
+			end
+			corner(item, 7)
+			if not selected then
+				item.MouseEnter:Connect(function() item.BackgroundColor3 = C.Surface end)
+				item.MouseLeave:Connect(function() item.BackgroundColor3 = C.Card end)
+			end
+			item.MouseButton1Click:Connect(function()
+				set(v); render(); close()
+			end)
+		end
+
+		TweenService:Create(popup, TweenInfo.new(0.16, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+			Size = UDim2.fromOffset(w, h),
+		}):Play()
+		TweenService:Create(arrow, TweenInfo.new(0.15), { Rotation = 180 }):Play()
+	end
+	btn.MouseButton1Click:Connect(open)
+end
+
+local function addMultiDropdown(card, label, iconName, items, get, set)
+	local ctrl = addOption(card, label, iconName)
+	local btn = new("TextButton", {
+		Size = UDim2.fromOffset(124, 28),
+		BackgroundColor3 = C.Surface,
+		Text = "",
+		AutoButtonColor = false,
+		LayoutOrder = 1,
+	}, ctrl)
+	corner(btn, 8)
+	local lbl = new("TextLabel", {
+		Position = UDim2.new(0, 10, 0, 0),
+		Size = UDim2.new(1, -30, 1, 0),
+		BackgroundTransparency = 1,
+		TextColor3 = C.Text,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}, btn)
+	local arrow = icon("chevron-down", 14, C.Muted, btn, {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -8, 0.5, 0),
+	})
+	local function render()
+		local n = 0
+		for _, it in ipairs(items) do if get(it.id) then n = n + 1 end end
+		lbl.Text = n == 0 and "Select..." or (n .. " skipped")
+		lbl.TextColor3 = n == 0 and C.Muted or C.Text
+	end
+	render()
+	RegHook.r = render
+
+	local blocker
+	local function close()
+		if blocker then blocker:Destroy(); blocker = nil end
+		TweenService:Create(arrow, TweenInfo.new(0.15), { Rotation = 0 }):Play()
+	end
+	local function open()
+		if blocker then return close() end
+		local sc = Scale.Scale
+		local itemH, pad = 32, 4
+		local w = math.max(btn.AbsoluteSize.X / sc, 196)
+		local h = #items * itemH + (#items - 1) * 2 + pad * 2
+		local vp = Gui.AbsoluteSize
+		local pos = btn.AbsolutePosition
+		local below = pos.Y + btn.AbsoluteSize.Y + 4 + h * sc <= vp.Y - 8
+
+		blocker = new("TextButton", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			Text = "",
+			AutoButtonColor = false,
+			ZIndex = 60,
+		}, Gui)
+		blocker.MouseButton1Click:Connect(close)
+
+		local anchor = new("Frame", {
+			Position = UDim2.fromOffset(pos.X + btn.AbsoluteSize.X, below and (pos.Y + btn.AbsoluteSize.Y + 4) or (pos.Y - 4)),
+			Size = UDim2.fromOffset(0, 0),
+			BackgroundTransparency = 1,
+		}, blocker)
+		local popup = new("Frame", {
+			AnchorPoint = Vector2.new(1, below and 0 or 1),
+			Size = UDim2.fromOffset(w, 0),
+			BackgroundColor3 = C.Card,
+			ClipsDescendants = true,
+		}, anchor)
+		new("UIScale", { Scale = sc }, popup)
+		corner(popup, 10)
+		new("UIStroke", { Color = WHITE, Transparency = 0.75, Thickness = 1 }, popup)
+		new("UIPadding", {
+			PaddingTop = UDim.new(0, pad), PaddingBottom = UDim.new(0, pad),
+			PaddingLeft = UDim.new(0, pad), PaddingRight = UDim.new(0, pad),
+		}, popup)
+		new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2) }, popup)
+
+		for i, it in ipairs(items) do
+			local item = new("TextButton", {
+				Size = UDim2.new(1, 0, 0, itemH),
+				BackgroundColor3 = C.Card,
+				Text = "",
+				AutoButtonColor = false,
+				LayoutOrder = i,
+			}, popup)
+			corner(item, 7)
+
+			local box = new("Frame", {
+				AnchorPoint = Vector2.new(0, 0.5),
+				Position = UDim2.new(0, 8, 0.5, 0),
+				Size = UDim2.fromOffset(18, 18),
+				BackgroundColor3 = C.Surface,
+			}, item)
+			corner(box, 5)
+			local tickIcon = icon("check", 13, C.OnAccent, box)
+			new("TextLabel", {
+				Position = UDim2.new(0, 34, 0, 0),
+				Size = UDim2.new(1, -40, 1, 0),
+				BackgroundTransparency = 1,
+				Text = it.name,
+				TextColor3 = C.Text,
+				Font = Enum.Font.GothamMedium,
+				TextSize = 12,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+			}, item)
+
+			local function refresh()
+				local on = get(it.id)
+				tickIcon.Visible = on
+				box.BackgroundColor3 = on and C.Accent or C.Surface
+			end
+			refresh()
+			item.MouseEnter:Connect(function() item.BackgroundColor3 = C.Surface end)
+			item.MouseLeave:Connect(function() item.BackgroundColor3 = C.Card end)
+			item.MouseButton1Click:Connect(function()
+				set(it.id, not get(it.id))
+				refresh(); render()
+			end)
+		end
+
+		TweenService:Create(popup, TweenInfo.new(0.16, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+			Size = UDim2.fromOffset(w, h),
+		}):Play()
+		TweenService:Create(arrow, TweenInfo.new(0.15), { Rotation = 180 }):Play()
+	end
+	btn.MouseButton1Click:Connect(open)
+end
+
+local function attachColorPicker(parent, get, set, width, order)
+	local swatch = new("TextButton", {
+		Size = UDim2.fromOffset(24, 24),
+		BackgroundColor3 = get(),
+		Text = "",
+		AutoButtonColor = false,
+		LayoutOrder = order,
+	}, parent)
+	corner(swatch, 6)
+	new("UIStroke", { Color = WHITE, Transparency = 0.6, Thickness = 1 }, swatch)
+	RegHook.c = function() swatch.BackgroundColor3 = get() end
+
+	local blocker, conns
+	local function close()
+		if conns then
+			for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+			conns = nil
+		end
+		if blocker then blocker:Destroy(); blocker = nil end
+	end
+
+	swatch.MouseButton1Click:Connect(function()
+		if blocker then return close() end
+		local sc = Scale.Scale
+		local W, SV_H, HUE_H = 150, 84, 12
+		local H = 8 + SV_H + 8 + HUE_H + 8 + 22 + 8
+		local vp = Gui.AbsoluteSize
+		local pos = swatch.AbsolutePosition
+		local below = pos.Y + swatch.AbsoluteSize.Y + 4 + H * sc <= vp.Y - 8
+
+		blocker = new("TextButton", {
+			Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Text = "", AutoButtonColor = false, ZIndex = 60,
+		}, Gui)
+		blocker.MouseButton1Click:Connect(close)
+		local anchor = new("Frame", {
+			Position = UDim2.fromOffset(pos.X + swatch.AbsoluteSize.X, below and (pos.Y + swatch.AbsoluteSize.Y + 4) or (pos.Y - 4)),
+			Size = UDim2.fromOffset(0, 0), BackgroundTransparency = 1,
+		}, blocker)
+		local popup = new("Frame", {
+			AnchorPoint = Vector2.new(1, below and 0 or 1), Size = UDim2.fromOffset(W, H),
+			BackgroundColor3 = C.Card, Active = true,
+		}, anchor)
+		new("UIScale", { Scale = sc }, popup)
+		corner(popup, 10)
+		new("UIStroke", { Color = WHITE, Transparency = 0.75, Thickness = 1 }, popup)
+
+		local h, s, v = Color3.toHSV(get())
+
+		local svBox = new("TextButton", {
+			Position = UDim2.fromOffset(8, 8), Size = UDim2.fromOffset(W - 16, SV_H),
+			BackgroundColor3 = Color3.fromHSV(h, 1, 1), Text = "", AutoButtonColor = false, ClipsDescendants = true,
+		}, popup)
+		corner(svBox, 4)
+		local white = new("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = WHITE, BorderSizePixel = 0 }, svBox)
+		new("UIGradient", {
+			Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0), NumberSequenceKeypoint.new(1, 1) }),
+		}, white)
+		local black = new("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = Color3.new(0, 0, 0), BorderSizePixel = 0 }, svBox)
+		new("UIGradient", {
+			Rotation = 90,
+			Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(1, 0) }),
+		}, black)
+		local svKnob = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(12, 12), BackgroundTransparency = 1,
+		}, svBox)
+		corner(svKnob, 6)
+		new("UIStroke", { Color = WHITE, Thickness = 2 }, svKnob)
+
+		local hueBar = new("TextButton", {
+			Position = UDim2.fromOffset(8, 8 + SV_H + 8), Size = UDim2.fromOffset(W - 16, HUE_H),
+			BackgroundColor3 = WHITE, Text = "", AutoButtonColor = false,
+		}, popup)
+		corner(hueBar, 7)
+		local keys = {}
+		for i = 0, 6 do table.insert(keys, ColorSequenceKeypoint.new(i / 6, Color3.fromHSV(math.min(i / 6, 0.999), 1, 1))) end
+		new("UIGradient", { Color = ColorSequence.new(keys) }, hueBar)
+		local hueKnob = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.fromOffset(6, HUE_H + 6), BackgroundColor3 = WHITE,
+		}, hueBar)
+		corner(hueKnob, 3)
+
+		local rowY = 8 + SV_H + 8 + HUE_H + 8
+		local prev = new("Frame", { Position = UDim2.fromOffset(8, rowY), Size = UDim2.fromOffset(34, 22), BackgroundColor3 = get() }, popup)
+		corner(prev, 6)
+		local hex = new("TextLabel", {
+			Position = UDim2.fromOffset(50, rowY), Size = UDim2.new(1, -58, 0, 22), BackgroundTransparency = 1,
+			TextColor3 = C.Text, Font = Enum.Font.GothamBold, TextSize = 11, TextXAlignment = Enum.TextXAlignment.Left, Text = "",
+		}, popup)
+
+		local function current() return Color3.fromHSV(h, s, v) end
+		local function refresh()
+			local col = current()
+			svBox.BackgroundColor3 = Color3.fromHSV(h, 1, 1)
+			svKnob.Position = UDim2.fromScale(s, 1 - v)
+			hueKnob.Position = UDim2.fromScale(h, 0.5)
+			prev.BackgroundColor3 = col
+			swatch.BackgroundColor3 = col
+			hex.Text = string.format("#%02X%02X%02X", math.floor(col.R * 255 + 0.5), math.floor(col.G * 255 + 0.5), math.floor(col.B * 255 + 0.5))
+		end
+		refresh()
+
+		local dragging
+		local last = 0
+		local function fromInput(p)
+			if dragging == "sv" then
+				local ap, as = svBox.AbsolutePosition, svBox.AbsoluteSize
+				s = math.clamp((p.X - ap.X) / as.X, 0, 1)
+				v = 1 - math.clamp((p.Y - ap.Y) / as.Y, 0, 1)
+			elseif dragging == "hue" then
+				local ap, as = hueBar.AbsolutePosition, hueBar.AbsoluteSize
+				h = math.clamp((p.X - ap.X) / as.X, 0, 0.999)
+			end
+			refresh()
+			if os.clock() - last > 0.08 then last = os.clock(); set(current()) end
+		end
+		local function begin(kind)
+			return function(input)
+				if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+					dragging = kind
+					fromInput(input.Position)
+				end
+			end
+		end
+		svBox.InputBegan:Connect(begin("sv"))
+		hueBar.InputBegan:Connect(begin("hue"))
+		conns = {
+			track(UserInputService.InputChanged:Connect(function(input)
+				if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+					or input.UserInputType == Enum.UserInputType.Touch) then
+					fromInput(input.Position)
+				end
+			end)),
+			track(UserInputService.InputEnded:Connect(function(input)
+				if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1
+					or input.UserInputType == Enum.UserInputType.Touch) then
+					dragging = nil
+					set(current())
+				end
+			end)),
+		}
+	end)
+	return swatch
+end
+
+local function addSwatches(card, label, iconName, _colors, get, set)
+	local ctrl = addOption(card, label, iconName)
+	attachColorPicker(ctrl, get, set, 24, 1)
+end
+
+local function addCheckbox(card, label, iconName, get, set, colorGet, colorSet, roleTag)
+	local ctrl, rowBtn = addOption(card, label, iconName, roleTag and 84 or (colorGet and 64 or true))
+	if colorGet then attachColorPicker(ctrl, colorGet, colorSet, 24, -1) end
+	if roleTag then
+		local tag = new("TextLabel", {
+			Size = UDim2.fromOffset(56, 22),
+			BackgroundColor3 = C.Surface,
+			Text = string.upper(roleTag),
+			TextColor3 = C.Text,
+			Font = Enum.Font.GothamBold,
+			TextSize = 10,
+			LayoutOrder = -2,
+		}, ctrl)
+		corner(tag, 6)
+	end
+
+	local box = new("TextButton", {
+		Size = UDim2.fromOffset(22, 22),
+		BackgroundColor3 = C.Surface,
+		Text = "",
+		AutoButtonColor = false,
+	}, ctrl)
+	corner(box, 6)
+	local stroke = new("UIStroke", { Color = C.Accent, Transparency = 0.6, Thickness = 1.2 }, box)
+	local tick = icon("check", 15, C.OnAccent, box)
+
+	local function refresh()
+		local on = get()
+		tick.Visible = on
+		stroke.Transparency = on and 1 or 0.6
+		TweenService:Create(box, TweenInfo.new(0.12), {
+			BackgroundColor3 = on and C.Accent or C.Surface,
+		}):Play()
+	end
+	refresh()
+
+	local function flip() set(not get()); refresh() end
+	box.MouseButton1Click:Connect(flip)
+	rowBtn.MouseButton1Click:Connect(flip)
+	RegHook.r = refresh
+end
+
+local activeSlider
+track(UserInputService.InputChanged:Connect(function(input)
+	if activeSlider and (input.UserInputType == Enum.UserInputType.MouseMovement
+		or input.UserInputType == Enum.UserInputType.Touch) then
+		activeSlider(input.Position.X)
+	end
+end))
+track(UserInputService.InputEnded:Connect(function(input)
+	if activeSlider and (input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch) then
+		activeSlider = nil
+		Body.ScrollingEnabled = true
+	end
+end))
+
+local function addSlider(card, label, iconName, min, max, get, set)
+	local ctrl = addOption(card, label, iconName)
+
+	local holder = new("TextButton", {
+		Size = UDim2.fromOffset(112, 28),
+		BackgroundTransparency = 1,
+		Text = "",
+		AutoButtonColor = false,
+		LayoutOrder = 1,
+	}, ctrl)
+	local bar = new("Frame", {
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 7, 0.5, 0),
+		Size = UDim2.new(1, -14, 0, 6),
+		BackgroundColor3 = C.Surface,
+	}, holder)
+	corner(bar, 3)
+	local fill = new("Frame", {
+		Size = UDim2.fromScale(0, 1),
+		BackgroundColor3 = C.Accent,
+	}, bar)
+	corner(fill, 3)
+	local knob = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0, 0, 0.5, 0),
+		Size = UDim2.fromOffset(14, 14),
+		BackgroundColor3 = C.Accent,
+	}, bar)
+	corner(knob, 7)
+
+	local val = pill(ctrl, tostring(get()), 38, 2, false)
+	val.TextColor3 = C.Text
+
+	local function render()
+		local v = get()
+		local r = (v - min) / (max - min)
+		fill.Size = UDim2.fromScale(r, 1)
+		knob.Position = UDim2.new(r, 0, 0.5, 0)
+		val.Text = tostring(v)
+	end
+	local function fromX(x)
+		local r = math.clamp((x - bar.AbsolutePosition.X) / math.max(bar.AbsoluteSize.X, 1), 0, 1)
+		local v = math.floor(min + r * (max - min) + 0.5)
+		if v ~= get() then set(v) end
+		render()
+	end
+
+	holder.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1
+			or input.UserInputType == Enum.UserInputType.Touch then
+			activeSlider = fromX
+			Body.ScrollingEnabled = false
+			fromX(input.Position.X)
+		end
+	end)
+	render()
+	RegHook.r = render
+end
+
+do
+	local function regAdd(card, label, get, set, refresh, lo, hi)
+		if Reg.skip then return end
+		local base = tostring(card.title or "?") .. "/" .. label
+		local id, n = base, 1
+		while Reg.ids[id] do n = n + 1; id = base .. "#" .. n end
+		Reg.ids[id] = true
+		local okDefault, default = pcall(get)
+		if not okDefault or default == nil then return end
+		table.insert(Reg.list, {
+			id = id, get = get, set = set, refresh = refresh,
+			default = default, lo = lo, hi = hi,
+			enabled = label == "Enabled" and base:sub(-8) == "/Enabled",
+		})
+	end
+
+	local oCard, oCheck, oSlide, oDrop, oMulti, oSwatch, oSeg =
+		addCard, addCheckbox, addSlider, addDropdown, addMultiDropdown, addSwatches, addSegment
+
+	addCard = function(order, iconName, title, subtitle, key, onToggle)
+		local card = oCard(order, iconName, title, subtitle, key, onToggle)
+		card.title = title
+		local st = State[key]
+		if st then
+			regAdd(card, "Enabled",
+				function() return st.Enabled == true end,
+				function(v)
+					v = v == true
+					if (st.Enabled == true) == v then return end
+					st.Enabled = v
+					card.refresh()
+					if onToggle then onToggle(v) else fire(key) end
+				end,
+				function() card.refresh() end)
+		end
+		return card
+	end
+
+	addCheckbox = function(card, label, iconName, get, set, colorGet, colorSet, roleTag)
+		RegHook.r, RegHook.c = nil, nil
+		oCheck(card, label, iconName, get, set, colorGet, colorSet, roleTag)
+		local r, c = RegHook.r, RegHook.c
+		regAdd(card, label, get, set, r)
+		if colorGet and colorSet then regAdd(card, label .. " Color", colorGet, colorSet, c) end
+	end
+
+	addSlider = function(card, label, iconName, min, max, get, set)
+		RegHook.r = nil
+		oSlide(card, label, iconName, min, max, get, set)
+		regAdd(card, label, get, set, RegHook.r, min, max)
+	end
+
+	addDropdown = function(card, label, iconName, values, fmt, get, set)
+		RegHook.r = nil
+		oDrop(card, label, iconName, values, fmt, get, set)
+		regAdd(card, label, get, set, RegHook.r)
+	end
+
+	addSegment = function(card, label, iconName, values, fmt, width, get, set)
+		RegHook.r = nil
+		oSeg(card, label, iconName, values, fmt, width, get, set)
+		regAdd(card, label, get, set, RegHook.r)
+	end
+
+	addMultiDropdown = function(card, label, iconName, items, get, set)
+		RegHook.r = nil
+		oMulti(card, label, iconName, items, get, set)
+		local r = RegHook.r
+		for _, it in ipairs(items) do
+			regAdd(card, label .. "/" .. tostring(it.name or it.id),
+				function() return get(it.id) == true end,
+				function(v) set(it.id, v == true) end,
+				r)
+		end
+	end
+
+	addSwatches = function(card, label, iconName, colors, get, set)
+		RegHook.c = nil
+		oSwatch(card, label, iconName, colors, get, set)
+		regAdd(card, label, get, set, RegHook.c)
+	end
+end
+
+State.SkillCheckTrap = { On = false }
+do
+	local T = State.SkillCheckTrap
+	local conn
+	local busy = false
+	local function inRange(lineRot, goalRot)
+		local a = (goalRot + 102) % 360
+		local b = (goalRot + 116) % 360
+		if a > b then return lineRot >= a or lineRot <= b end
+		return lineRot >= a and lineRot <= b
+	end
+	local function step()
+		if unloaded or not T.On or busy then return end
+		local pg = LP:FindFirstChildOfClass("PlayerGui")
+		if not pg then return end
+		for _, name in ipairs({ "SkillCheckPromptGui", "SkillCheckPromptGui-con" }) do
+			local prompt = pg:FindFirstChild(name)
+			if prompt and prompt.Enabled ~= false then
+				local check = prompt:FindFirstChild("Check")
+				if check and check.Visible then
+					local line = check:FindFirstChild("Line")
+					if not line then return end
+					local target
+					for _, tn in ipairs({ "TrapPerfect", "TrapGoal" }) do
+						local c = check:FindFirstChild(tn)
+						if c and c.Visible then target = c; break end
+					end
+					if not target then return end
+					local press = inRange(line.Rotation % 360, target.Rotation % 360)
+					if press then
+						busy = true
+						task.spawn(function()
+							pcall(function() State.SkillCheckObj:_fireAction() end)
+							task.wait(0.05)
+							busy = false
+						end)
+					end
+					return
+				end
+			end
+		end
+	end
+	State.TrapSkillSet = function(v)
+		T.On = v == true
+		if conn then conn:Disconnect(); conn = nil end
+		busy = false
+		if T.On then conn = RunService.RenderStepped:Connect(function() pcall(step) end) end
+	end
+end
+
+do
+	local s = State.SkillCheck
+	local obj = State.SkillCheckObj
+	local card = addCard(0, "target", "Auto Skill Check", "", "SkillCheck")
+	local function sync() card.sub.Text = "Mode: " .. s.Mode end
+	sync()
+	addDropdown(card, "Mode", "list", { "Legit", "Normal" },
+		function(v) return v end,
+		function() return s.Mode end,
+		function(v) obj:SetMode(v); sync() end)
+	local T = State.SkillCheckTrap
+	addCheckbox(card, "Auto Trap Skill Check", "target",
+		function() return T.On end,
+		function(v) State.TrapSkillSet(v) end)
+end
+
+do
+	local s = State.Spear
+	local card = addCard(1, "swords", "Silent Spear [Veil]", "", "Spear")
+	local function sync()
+		card.sub.Text = string.format("FOV %d \226\128\162 Range %d", s.FOV, s.MaxRange)
+	end
+	sync()
+
+	addCheckbox(card, "FOV Aim", "scan",
+		function() return s.FovAim end,
+		function(v) s.FovAim = v end)
+	addCheckbox(card, "Predict Spear", "crosshair",
+		function() return s.Predict ~= false end,
+		function(v) s.Predict = v end)
+	addSlider(card, "FOV (px)", "circle", 40, 600,
+		function() return math.clamp(math.floor(tonumber(s.FOV) or 240), 40, 600) end,
+		function(v) s.FOV = v; sync() end)
+	addSlider(card, "Max Range", "ruler", 50, 500,
+		function() return math.clamp(math.floor(tonumber(s.MaxRange) or 500), 50, 500) end,
+		function(v) s.MaxRange = v; sync() end)
+	addSlider(card, "Spear Speed", "gauge", 60, 200,
+		function() return math.clamp(math.floor(tonumber(s.SpearSpeed) or 180), 60, 200) end,
+		function(v) s.SpearSpeed = v end)
+	addSlider(card, "Drop (x0.1)", "arrow-down", 0, 10,
+		function() return math.clamp(math.floor((tonumber(s.Drop) or 0.5) * 10 + 0.5), 0, 10) end,
+		function(v) s.Drop = v / 10 end)
+end
+
+do
+	local s = State.SilentChain
+	local card = addCard(2, "link", "Silent Chain [Butcher]", "", "SilentChain")
+	local function sync()
+		card.sub.Text = string.format("Range %d \226\128\162 Speed %d", s.Range, s.Speed)
+	end
+	sync()
+
+	addCheckbox(card, "Prediction", "crosshair",
+		function() return s.Prediction end,
+		function(v) s.Prediction = v end)
+	addCheckbox(card, "Target Highlight", "eye",
+		function() return s.Highlight end,
+		function(v) s.Highlight = v end)
+	addCheckbox(card, "Debug Log", "bug",
+		function() return s.Debug end,
+		function(v) s.Debug = v end)
+	addSlider(card, "Chain Range", "ruler", 10, 50,
+		function() return math.clamp(math.floor(tonumber(s.Range) or 50), 10, 50) end,
+		function(v) s.Range = v; sync() end)
+	addSlider(card, "Chain Speed", "gauge", 80, 250,
+		function() return math.clamp(math.floor(tonumber(s.Speed) or 140), 80, 250) end,
+		function(v) s.Speed = v; sync() end)
+	addSlider(card, "Prediction Strength (%)", "move", 0, 150,
+		function() return math.clamp(math.floor((tonumber(s.PredMultiplier) or 1) * 100 + 0.5), 0, 150) end,
+		function(v) s.PredMultiplier = v / 100 end)
+	addSlider(card, "Aim Height (x0.1)", "arrow-down", -30, 50,
+		function() return math.clamp(math.floor((tonumber(s.AimHeightOffset) or 0.5) * 10 + 0.5), -30, 50) end,
+		function(v) s.AimHeightOffset = v / 10 end)
+end
+
+do
+	local s = Parry
+	local card = addCard(3, "shield", "Auto Parry", "", "Parry", function(on)
+		if on and ParryV2.Enabled then
+			ParryV2.Enabled = false
+			local otherCard = ParryCards.V2
+			if otherCard then
+				otherCard.refresh()
+				otherCard.sub.Text = "Dimatikan otomatis (Auto Parry diaktifkan)"
+				task.delay(2.5, function() if otherCard and otherCard.sub then pcall(function() otherCard.sub.Text = string.format("Range %d \226\128\162 Face %d", ParryV2.Range, ParryV2.FaceSensitivity) end) end end)
+			end
+			local otherShortcut = _G.KINON_AutoParryV2Shortcut
+			if type(otherShortcut) == "table" and type(otherShortcut.RefreshButton) == "function" then
+				pcall(otherShortcut.RefreshButton)
+			end
+		end
+		local shortcut = _G.KINON_AutoParryShortcut
+		if type(shortcut) == "table" and type(shortcut.RefreshButton) == "function" then
+			pcall(shortcut.RefreshButton)
+		end
+	end)
+	ParryCards.V1 = card
+	ParryUIRefresh = card.refresh
+
+	local function sync()
+		card.sub.Text = string.format("Range %d \226\128\162 Face %d", s.Range, s.FaceSensitivity)
+	end
+	sync()
+
+	addSlider(card, "Range (studs)", "radar", 5, 35,
+		function() return s.Range end,
+		function(v) s.Range = v; sync() end)
+
+	addCheckbox(card, "Show Range", "circle",
+		function() return s.CircleVisible end,
+		function(v) s.CircleVisible = v end)
+
+	addSwatches(card, "Range Color", "palette", {
+		Color3.fromRGB(255, 255, 255),
+		Color3.fromRGB(255, 90, 90),
+		Color3.fromRGB(255, 190, 70),
+		Color3.fromRGB(255, 235, 100),
+		Color3.fromRGB(100, 230, 150),
+		Color3.fromRGB(100, 200, 255),
+	}, function() return s.RangeColor end, function(c) s.RangeColor = c end)
+
+	addSlider(card, "Face Sensitivity", "scan-face", 0, 10,
+		function() return math.clamp(math.floor(tonumber(s.FaceSensitivity) or 10), 0, 10) end,
+		function(v) s.FaceSensitivity = v; s.FaceBias = v; sync() end)
+
+	addCheckbox(card, "Aggressive Mode", "zap",
+		function() return s.AggressiveMode end,
+		function(v) s.AggressiveMode = v end)
+
+	addCheckbox(card, "Button Parry", "mouse-pointer-click",
+		function() return FloatingParryButtonEnabled end,
+		function(v)
+			FloatingParryButtonEnabled = v
+			local shortcut = _G.KINON_AutoParryShortcut
+			if type(shortcut) == "table" and shortcut.Gui then
+				shortcut.Gui.Enabled = v
+			end
+		end)
+
+	do
+		local items = {}
+		for _, name in ipairs({ "Masked Alex Attack", "Masked Alex Lunge", "Hidden Dash", "Abyswalker Slash" }) do
+			table.insert(items, { id = VD_SkipParryNameToId[name], name = name })
+		end
+		addMultiDropdown(card, "Skip Parry", "ban", items,
+			function(id) return VD_SkipParryOptions[id] == true end,
+			function(id, v) VD_SkipParryOptions[id] = v end)
+	end
+end
+
+
+do
+	local s = ParryV2
+	local card = addCard(4, "shield-check", "Auto Parry V2", "", "ParryV2", function(on)
+		if on and Parry.Enabled then
+			Parry.Enabled = false
+			local otherCard = ParryCards.V1
+			if otherCard then
+				otherCard.refresh()
+				otherCard.sub.Text = "Dimatikan otomatis (Auto Parry V2 diaktifkan)"
+				task.delay(2.5, function() if otherCard and otherCard.sub then pcall(function() otherCard.sub.Text = string.format("Range %d \226\128\162 Face %d", Parry.Range, Parry.FaceSensitivity) end) end end)
+			end
+			local otherShortcut = _G.KINON_AutoParryShortcut
+			if type(otherShortcut) == "table" and type(otherShortcut.RefreshButton) == "function" then
+				pcall(otherShortcut.RefreshButton)
+			end
+		end
+		local shortcut = _G.KINON_AutoParryV2Shortcut
+		if type(shortcut) == "table" and type(shortcut.RefreshButton) == "function" then
+			pcall(shortcut.RefreshButton)
+		end
+	end)
+	ParryCards.V2 = card
+	ParryUIRefreshV2 = card.refresh
+
+	local function sync()
+		card.sub.Text = string.format("Range %d \226\128\162 Face %d", s.Range, s.FaceSensitivity)
+	end
+	sync()
+
+	addSlider(card, "Range (studs)", "radar", 5, 35,
+		function() return s.Range end,
+		function(v) s.Range = v; sync() end)
+
+	addCheckbox(card, "Show Range", "circle",
+		function() return s.CircleVisible end,
+		function(v) s.CircleVisible = v end)
+
+	addSwatches(card, "Range Color", "palette", {
+		Color3.fromRGB(255, 255, 255),
+		Color3.fromRGB(255, 90, 90),
+		Color3.fromRGB(255, 190, 70),
+		Color3.fromRGB(255, 235, 100),
+		Color3.fromRGB(100, 230, 150),
+		Color3.fromRGB(100, 200, 255),
+	}, function() return s.RangeColor end, function(c) s.RangeColor = c end)
+
+	addSlider(card, "Face Sensitivity", "scan-face", 0, 10,
+		function() return math.clamp(math.floor(tonumber(s.FaceSensitivity) or 10), 0, 10) end,
+		function(v) s.FaceSensitivity = v; sync() end)
+
+	addCheckbox(card, "Aggressive Mode", "zap",
+		function() return s.AggressiveMode end,
+		function(v) s.AggressiveMode = v end)
+
+	addCheckbox(card, "Button Parry", "mouse-pointer-click",
+		function() return FloatingParryButtonEnabledV2 end,
+		function(v)
+			FloatingParryButtonEnabledV2 = v
+			local shortcut = _G.KINON_AutoParryV2Shortcut
+			if type(shortcut) == "table" and shortcut.Gui then
+				shortcut.Gui.Enabled = v
+			end
+		end)
+
+	do
+		local items = {}
+		for _, name in ipairs({ "Masked Alex Attack", "Masked Alex Lunge", "Hidden Dash", "Abyswalker Slash" }) do
+			table.insert(items, { id = VD_SkipParryNameToId[name], name = name })
+		end
+		addMultiDropdown(card, "Skip Parry", "ban", items,
+			function(id) return VD_SkipParryOptions[id] == true end,
+			function(id, v) VD_SkipParryOptions[id] = v end)
+	end
+end
+
+State.Moonwalk = { Enabled = false, SwingSpeed = 30, SwingAngle = 35, BackSpeed = 13, LimitSpeed = true }
+
+do
+	local s = State.Moonwalk
+	local STEP = "KinonMoonwalk"
+	local bound = false
+	local saved, heading = nil, nil
+	local card
+
+	local function restore()
+		local d = saved
+		saved = nil
+		if d and d.hum and d.hum.Parent then
+			pcall(function()
+				d.hum.AutoRotate = d.auto
+				if d.limited then d.hum.WalkSpeed = d.speed end
+			end)
+		end
+	end
+
+	local function step()
+		if unloaded or not s.Enabled then return end
+		local char = LP.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local cam = workspace.CurrentCamera
+		if not hrp or not hum or not cam or hum.Health <= 0 or hum.Sit
+			or char:GetAttribute("Downed") == true or char:GetAttribute("IsDown") == true
+			or char:GetAttribute("Knocked") == true then
+			restore()
+			return
+		end
+		if not saved or saved.hum ~= hum then
+			restore()
+			saved = { hum = hum, auto = hum.AutoRotate, speed = hum.WalkSpeed, limited = false }
+		end
+
+		local look = cam.CFrame.LookVector
+		local flat = Vector3.new(look.X, 0, look.Z)
+		if flat.Magnitude > 0.1 then heading = flat.Unit end
+		if not heading then return end
+
+		hum.AutoRotate = false
+		if s.LimitSpeed then
+			local ws = math.clamp(tonumber(s.BackSpeed) or 13, 4, 40)
+			if hum.WalkSpeed ~= ws then hum.WalkSpeed = ws end
+			saved.limited = true
+		elseif saved.limited then
+			hum.WalkSpeed = saved.speed
+			saved.limited = false
+		end
+
+		local angle = math.sin(tick() * (tonumber(s.SwingSpeed) or 30)) * (tonumber(s.SwingAngle) or 35)
+		local pos = hrp.Position
+		hrp.CFrame = CFrame.lookAt(pos, pos + heading) * CFrame.Angles(0, math.rad(angle), 0)
+		hum:Move(Vector3.new(0, 0, 1), true)
+	end
+
+	local function stop()
+		if bound then
+			bound = false
+			pcall(function() RunService:UnbindFromRenderStep(STEP) end)
+		end
+		restore()
+	end
+
+	local function start()
+		stop()
+		heading = nil
+		bound = true
+		RunService:BindToRenderStep(STEP, Enum.RenderPriority.Camera.Value + 1, step)
+	end
+
+	local function toggleMoonwalk()
+		s.Enabled = not s.Enabled
+		Hooks.Moonwalk(s)
+		if card then card.refresh() end
+	end
+
+	local function createButton()
+		local shared = _G.KINON_MoonwalkShortcut
+		if type(shared) ~= "table" then
+			shared = {}
+			_G.KINON_MoonwalkShortcut = shared
+		end
+		for _, k in ipairs({ "InputConn", "EndConn", "TouchMoveConn" }) do
+			if shared[k] then
+				pcall(function() shared[k]:Disconnect() end)
+				shared[k] = nil
+			end
+		end
+		if shared.Gui then
+			pcall(function() shared.Gui:Destroy() end)
+			shared.Gui = nil
+		end
+
+		local screenGui = Instance.new("ScreenGui")
+		screenGui.Name = "KINON_MoonwalkShortcut"
+		screenGui.ResetOnSpawn = false
+		screenGui.IgnoreGuiInset = true
+		screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+		screenGui.Parent = parent
+		shared.Gui = screenGui
+
+		local frame = Instance.new("Frame")
+		frame.Name = "Frame"
+		frame.Size = UDim2.fromOffset(142, 34)
+		frame.Position = shared.Position or UDim2.new(1, -138, 0.47, 0)
+		frame.BackgroundColor3 = WHITE
+		frame.BackgroundTransparency = 0.02
+		frame.Active = true
+		frame.BorderSizePixel = 0
+		frame.ZIndex = 150
+		frame.Parent = screenGui
+		Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 9)
+
+		local frameStroke = Instance.new("UIStroke")
+		frameStroke.Color = Color3.fromRGB(90, 90, 90)
+		frameStroke.Thickness = 1
+		frameStroke.Transparency = 0.12
+		frameStroke.Parent = frame
+
+		local gradient = Instance.new("UIGradient")
+		gradient.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(34, 34, 34)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(8, 8, 8)),
+		})
+		gradient.Rotation = 90
+		gradient.Parent = frame
+
+		local button = Instance.new("TextButton")
+		button.Name = "ActionButton"
+		button.Size = UDim2.fromScale(1, 1)
+		button.BackgroundTransparency = 1
+		button.Text = ""
+		button.AutoButtonColor = false
+		button.ZIndex = 151
+		button.Parent = frame
+
+		local title = Instance.new("TextLabel")
+		title.Name = "Title"
+		title.BackgroundTransparency = 1
+		title.Position = UDim2.fromOffset(9, 0)
+		title.Size = UDim2.new(1, -18, 1, 0)
+		title.Font = Enum.Font.GothamBold
+		title.Text = "MOONWALK   [OFF]"
+		title.TextSize = 10
+		title.TextXAlignment = Enum.TextXAlignment.Left
+		title.TextYAlignment = Enum.TextYAlignment.Center
+		title.TextColor3 = C.Text
+		title.ZIndex = 152
+		title.Parent = button
+
+		local function viewportSize()
+			local camera = workspace.CurrentCamera
+			return camera and camera.ViewportSize or Vector2.new(800, 600)
+		end
+
+		local function refreshButton()
+			local on = s.Enabled == true
+			title.Text = on and "MOONWALK   [ON]" or "MOONWALK   [OFF]"
+			title.TextColor3 = on and WHITE or Color3.fromRGB(170, 170, 170)
+			frameStroke.Color = on and WHITE or Color3.fromRGB(90, 90, 90)
+			frameStroke.Transparency = on and 0.02 or 0.12
+		end
+		shared.RefreshButton = refreshButton
+
+		task.defer(function()
+			if not frame.Parent then return end
+			title.Text = "MOONWALK   [ON]"
+			local onWidth = title.TextBounds.X
+			title.Text = "MOONWALK   [OFF]"
+			local offWidth = title.TextBounds.X
+			frame.Size = UDim2.fromOffset(math.clamp(math.ceil(math.max(onWidth, offWidth)) + 26, 116, 166), 38)
+			local vp, pos, size = viewportSize(), frame.Position, frame.AbsoluteSize
+			frame.Position = UDim2.fromOffset(
+				math.clamp(pos.X.Scale * vp.X + pos.X.Offset, 0, math.max(0, vp.X - size.X)),
+				math.clamp(pos.Y.Scale * vp.Y + pos.Y.Offset, 0, math.max(0, vp.Y - size.Y)))
+			shared.Position = frame.Position
+			refreshButton()
+		end)
+		refreshButton()
+
+		local pressed, moved = false, false
+		local activeInput, startPointer, startX, startY
+		local dragThreshold = 6
+
+		local function beginDrag(input)
+			if input.UserInputType ~= Enum.UserInputType.MouseButton1
+				and input.UserInputType ~= Enum.UserInputType.Touch then return end
+			pressed, moved = true, false
+			activeInput = input
+			startPointer = Vector2.new(input.Position.X, input.Position.Y)
+			local vp, pos = viewportSize(), frame.Position
+			startX = pos.X.Scale * vp.X + pos.X.Offset
+			startY = pos.Y.Scale * vp.Y + pos.Y.Offset
+		end
+
+		local function moveDrag(input)
+			if not pressed or not startPointer then return end
+			local delta = Vector2.new(input.Position.X, input.Position.Y) - startPointer
+			if not moved and delta.Magnitude > dragThreshold then moved = true end
+			if not moved then return end
+			local vp, size = viewportSize(), frame.AbsoluteSize
+			frame.Position = UDim2.fromOffset(
+				math.clamp(startX + delta.X, 0, math.max(0, vp.X - size.X)),
+				math.clamp(startY + delta.Y, 0, math.max(0, vp.Y - size.Y)))
+			shared.Position = frame.Position
+		end
+
+		button.InputBegan:Connect(beginDrag)
+
+		shared.InputConn = UserInputService.InputChanged:Connect(function(input)
+			if not pressed or not activeInput then return end
+			if activeInput.UserInputType == Enum.UserInputType.MouseButton1
+				and input.UserInputType == Enum.UserInputType.MouseMovement then
+				moveDrag(input)
+			elseif activeInput.UserInputType == Enum.UserInputType.Touch and input == activeInput then
+				moveDrag(input)
+			end
+		end)
+		shared.TouchMoveConn = UserInputService.TouchMoved:Connect(function(input)
+			if pressed and activeInput and activeInput.UserInputType == Enum.UserInputType.Touch
+				and input == activeInput then moveDrag(input) end
+		end)
+		shared.EndConn = UserInputService.InputEnded:Connect(function(input)
+			if not pressed or not activeInput then return end
+			local matchTouch = activeInput.UserInputType == Enum.UserInputType.Touch
+				and input.UserInputType == Enum.UserInputType.Touch and input == activeInput
+			local matchMouse = activeInput.UserInputType == Enum.UserInputType.MouseButton1
+				and input.UserInputType == Enum.UserInputType.MouseButton1
+			if not matchTouch and not matchMouse then return end
+			if not moved then toggleMoonwalk() end
+			pressed, moved, activeInput = false, false, nil
+			startPointer = nil
+		end)
+
+		screenGui.Enabled = false
+		return screenGui
+	end
+
+	createButton()
+
+	Hooks.Moonwalk = function(st)
+		if st.Enabled then start() else stop() end
+		local shortcut = _G.KINON_MoonwalkShortcut
+		if type(shortcut) == "table" and type(shortcut.RefreshButton) == "function" then
+			pcall(shortcut.RefreshButton)
+		end
+	end
+
+	function s.Destroy()
+		stop()
+		local shortcut = _G.KINON_MoonwalkShortcut
+		if type(shortcut) == "table" then
+			for _, k in ipairs({ "InputConn", "EndConn", "TouchMoveConn" }) do
+				if shortcut[k] then pcall(function() shortcut[k]:Disconnect() end) end
+			end
+			if shortcut.Gui then pcall(function() shortcut.Gui:Destroy() end) end
+		end
+	end
+
+	track(UserInputService.InputBegan:Connect(function(input, processed)
+		if processed or unloaded then return end
+		if input.KeyCode == Enum.KeyCode.F8 then toggleMoonwalk() end
+	end))
+
+	card = addCard(15, "footprints", "Moonwalk", "", "Moonwalk")
+	local function sync()
+		card.sub.Text = string.format("Swing %d \226\128\162 Angle %d", s.SwingSpeed, s.SwingAngle)
+	end
+	sync()
+
+	addSlider(card, "Swing Speed", "gauge", 2, 60,
+		function() return math.clamp(math.floor(tonumber(s.SwingSpeed) or 30), 2, 60) end,
+		function(v) s.SwingSpeed = v; sync() end)
+	addSlider(card, "Swing Angle", "move-horizontal", 0, 90,
+		function() return math.clamp(math.floor(tonumber(s.SwingAngle) or 35), 0, 90) end,
+		function(v) s.SwingAngle = v; sync() end)
+	addCheckbox(card, "Limit Back Speed", "gauge",
+		function() return s.LimitSpeed == true end,
+		function(v) s.LimitSpeed = v end)
+	addSlider(card, "Back Speed", "arrow-down", 4, 40,
+		function() return math.clamp(math.floor(tonumber(s.BackSpeed) or 13), 4, 40) end,
+		function(v) s.BackSpeed = v end)
+	addCheckbox(card, "Button Moonwalk", "mouse-pointer-click",
+		function()
+			local shortcut = _G.KINON_MoonwalkShortcut
+			return type(shortcut) == "table" and shortcut.Gui ~= nil and shortcut.Gui.Enabled == true
+		end,
+		function(v)
+			local shortcut = _G.KINON_MoonwalkShortcut
+			if type(shortcut) == "table" and shortcut.Gui then shortcut.Gui.Enabled = v end
+		end)
+end
+
+State.StunObj = (function()
+	local STUN_ATTRS = { "IsStunned", "isStunned", "Stunned", "stunned", "IsStun", "Stun" }
+	local DEFAULT_STUN = 2
+	local cache = {}
+	local acc = 0
+	local obj = {}
+
+	local function isStunned(char)
+		for _, name in ipairs(STUN_ATTRS) do
+			if char:GetAttribute(name) == true then return true end
+		end
+		local ci = char:FindFirstChild("CheckInterractable")
+		if ci and (ci:GetAttribute("isStunned") == true or ci:GetAttribute("Stunned") == true) then
+			return true
+		end
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		local sv = hum and hum:FindFirstChild("StunValue")
+		if sv ~= nil and sv.Value > 0 then return true end
+		local st = char:GetAttribute("State")
+		if type(st) == "string" and string.find(string.lower(st), "stun", 1, true) then return true end
+		for k, v in pairs(char:GetAttributes()) do
+			if type(k) == "string" and string.find(string.lower(k), "stun", 1, true) and (v == true or (type(v) == "number" and v > 0)) then return true end
+		end
+		if hum then
+			for k, v in pairs(hum:GetAttributes()) do
+				if type(k) == "string" and string.find(string.lower(k), "stun", 1, true) and (v == true or (type(v) == "number" and v > 0)) then return true end
+			end
+		end
+		return false
+	end
+
+	local function stunLeft(char)
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		local sv = hum and hum:FindFirstChild("StunValue")
+		if sv and sv:IsA("NumberValue") and sv.Value > 0 and sv.Value < 60 then return sv.Value end
+		for k, v in pairs(char:GetAttributes()) do
+			if type(k) == "string" and string.find(string.lower(k), "stun", 1, true) and type(v) == "number" and v > 0 and v < 60 then return v end
+		end
+		return nil
+	end
+
+	local function isKillerPlayer(p)
+		local team = p.Team and string.lower(p.Team.Name) or ""
+		return string.find(team, "killer", 1, true) ~= nil
+	end
+
+	local SoundService = game:GetService("SoundService")
+	local STUN_SOUND_LIST = {
+		{ "Default",       "18843924331" },
+		{ "Clash Royale",  "114072050006157" },
+		{ "Blash",         "89068385567682" },
+		{ "antek asing",   "129760109847577" },
+		{ "hidup Jokowi",  "116121992738402" },
+		{ "Kururin Kuru",  "119896940405402" },
+		{ "Spongebob",     "6835794541" },
+		{ "Fahhhh",        "123562480982353" },
+		{ "Aughhh",        "9095205664" },
+		{ "iPhone",        "4203251375" },
+		{ "Siren",         "130677853589923" },
+		{ "an anime",      "128090092396552" },
+	}
+	local stunSoundIds, stunSoundNames = {}, {}
+	for _, e in ipairs(STUN_SOUND_LIST) do
+		stunSoundIds[e[1]] = e[2]
+		table.insert(stunSoundNames, e[1])
+	end
+	State.StunSound = { Enabled = false, Selected = "Default", Volume = 150 } -- Volume dalam %
+	State.StunSoundNames = stunSoundNames
+
+	local liveSounds = {}
+	local function playStunSound()
+		local SS = State.StunSound
+		local id = stunSoundIds[SS.Selected] or stunSoundIds.Default
+		pcall(function()
+			local snd = Instance.new("Sound")
+			snd.Name = "KinonStunSound"
+			snd.SoundId = "rbxassetid://" .. tostring(id)
+			snd.Volume = math.clamp((tonumber(SS.Volume) or 150) / 100, 0, 5)
+			snd.PlaybackSpeed = 1
+			snd.Parent = SoundService
+			liveSounds[snd] = true
+			local function cleanup()
+				liveSounds[snd] = nil
+				pcall(function() snd:Destroy() end)
+			end
+			snd.Ended:Connect(cleanup)
+			task.delay(6, cleanup)
+			snd:Play()
+		end)
+	end
+	function obj.PreviewStunSound() playStunSound() end
+
+	local stunSeen = setmetatable({}, { __mode = "k" })
+	local stunPrimed = false
+	track(RunService.Heartbeat:Connect(function()
+		local SS = State.StunSound
+		if unloaded or not SS.Enabled then
+			if stunPrimed then stunPrimed = false; table.clear(stunSeen) end
+			return
+		end
+		local firstPass = not stunPrimed
+		stunPrimed = true
+		local shouldPlay = false
+		for _, p in ipairs(Players:GetPlayers()) do
+			local char = p.Character
+			if p ~= LP and char and isKillerPlayer(p) then
+				local ok, stunned = pcall(isStunned, char)
+				if ok and stunned then
+					if not stunSeen[char] then
+						stunSeen[char] = true
+						if not firstPass then shouldPlay = true end
+					end
+				else
+					stunSeen[char] = nil
+				end
+			end
+		end
+		if shouldPlay then playStunSound() end
+	end))
+
+	local function destroyEntry(char, animate)
+		local e = cache[char]
+		if not e then return end
+		cache[char] = nil
+		pcall(function() e.pulse:Cancel() end)
+		pcall(function() if e.tween then e.tween:Cancel() end end)
+		if animate and e.gui.Parent then
+			TweenService:Create(e.scale, TweenInfo.new(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { Scale = 0 }):Play()
+			task.delay(0.25, function() pcall(function() e.gui:Destroy() end) end)
+		else
+			pcall(function() e.gui:Destroy() end)
+		end
+	end
+
+	local function build(char, player)
+		local head = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+		if not head then return nil end
+
+		local gui = new("BillboardGui", {
+			Name = "KINON_StunIndicator",
+			Size = UDim2.fromOffset(132, 36),
+			StudsOffset = Vector3.new(0, 3.5, 0),
+			AlwaysOnTop = true,
+			LightInfluence = 0,
+			MaxDistance = 5000,
+			Adornee = head,
+		}, char)
+
+		local main = new("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(132, 36),
+			BackgroundColor3 = C.Card,
+			BackgroundTransparency = 0.05,
+			BorderSizePixel = 0,
+		}, gui)
+		corner(main, 10)
+		local scale = new("UIScale", { Scale = 0 }, main)
+		local stroke = new("UIStroke", { Color = C.Accent, Thickness = 1.2, Transparency = 0.5 }, main)
+
+		local holder = new("Frame", {
+			Position = UDim2.new(0, 6, 0, 6),
+			Size = UDim2.fromOffset(24, 24),
+			BackgroundColor3 = C.Surface,
+			BorderSizePixel = 0,
+		}, main)
+		corner(holder, 12)
+		icon("zap", 14, C.Text, holder)
+
+		new("TextLabel", {
+			Position = UDim2.new(0, 38, 0, 5),
+			Size = UDim2.new(1, -92, 0, 16),
+			BackgroundTransparency = 1,
+			Text = "STUNNED",
+			TextColor3 = C.Text,
+			Font = Enum.Font.GothamBold,
+			TextSize = 12,
+			TextXAlignment = Enum.TextXAlignment.Left,
+		}, main)
+		local timeLabel = new("TextLabel", {
+			Position = UDim2.new(1, -52, 0, 5),
+			Size = UDim2.fromOffset(44, 16),
+			BackgroundTransparency = 1,
+			Text = "",
+			TextColor3 = C.Text,
+			Font = Enum.Font.GothamBold,
+			TextSize = 12,
+			TextXAlignment = Enum.TextXAlignment.Right,
+		}, main)
+
+		local barTrack = new("Frame", {
+			Position = UDim2.new(0, 38, 1, -9),
+			Size = UDim2.new(1, -46, 0, 4),
+			BackgroundColor3 = C.Surface,
+			BorderSizePixel = 0,
+		}, main)
+		corner(barTrack, 2)
+		local fill = new("Frame", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundColor3 = C.Accent,
+			BorderSizePixel = 0,
+		}, barTrack)
+		corner(fill, 2)
+
+		TweenService:Create(scale, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Scale = 1 }):Play()
+		local pulse = TweenService:Create(stroke,
+			TweenInfo.new(0.8, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+			{ Transparency = 0.1 })
+		pulse:Play()
+
+		return { gui = gui, scale = scale, pulse = pulse, fill = fill, timeLabel = timeLabel, total = 1, endAt = 0, tween = nil }
+	end
+
+	local function startTimer(e, left)
+		e.total = math.max(left, 0.05)
+		e.endAt = os.clock() + left
+		pcall(function() if e.tween then e.tween:Cancel() end end)
+		e.fill.Size = UDim2.fromScale(math.clamp(left / e.total, 0, 1), 1)
+		e.tween = TweenService:Create(e.fill, TweenInfo.new(left, Enum.EasingStyle.Linear), { Size = UDim2.fromScale(0, 1) })
+		e.tween:Play()
+	end
+
+	function obj.Clear(animate)
+		for char in pairs(cache) do
+			destroyEntry(char, animate)
+		end
+	end
+
+	function obj.Destroy()
+		obj.Clear(false)
+		State.StunSound.Enabled = false
+		for snd in pairs(liveSounds) do pcall(function() snd:Destroy() end) end
+		table.clear(liveSounds)
+	end
+
+	track(RunService.Heartbeat:Connect(function(dt)
+		acc = acc + dt
+		if acc < 0.05 then return end
+		acc = 0
+
+		local S = State.ESPPlayer
+		if unloaded or not (S.Enabled and S.StunInd) then
+			if next(cache) then obj.Clear(true) end
+			return
+		end
+
+		local seen = {}
+		for _, p in ipairs(Players:GetPlayers()) do
+			local char = p.Character
+			if p ~= LP and char and isKillerPlayer(p) then
+				local ok, stunned = pcall(isStunned, char)
+				if ok and stunned then
+					seen[char] = true
+					local e = cache[char]
+					local left = stunLeft(char)
+					if not e then
+						e = build(char, p)
+						cache[char] = e
+						if e then startTimer(e, left or DEFAULT_STUN) end
+					elseif left and math.abs((e.endAt - os.clock()) - left) > 0.6 then
+						startTimer(e, left)
+					end
+					if e then
+						local remain = e.endAt - os.clock()
+						if remain > 0.05 then
+							e.timeLabel.Text = string.format("%.1fs", remain)
+						elseif left then
+							startTimer(e, left)
+						else
+							e.timeLabel.Text = "..."
+						end
+					end
+				end
+			end
+		end
+
+		for char in pairs(cache) do
+			if not seen[char] then destroyEntry(char, char.Parent ~= nil) end
+		end
+	end))
+
+	return obj
+end)()
+
+State.HitAreaObj = (function()
+	local obj = {}
+	local RANGE, ANGLE = 10, 90
+	local SEG = 10
+	local EDGE_STEPS = 4
+	local DASH, GAP, DASH_MAX = 1.4, 1.0, 40
+	local MAX_DIST = 160
+	local LINE_LEN, LINE_LINGER = 50, 0.18 -- panjang maksimal Attack Line: 50 studs
+	local HIDDEN_DASH_ID = "73681849513551"
+	local SPEAR_CHARGE_IDS = { ["101443662521580"] = true, ["127622545856523"] = true } -- Veil Spear Throw 1 / 2
+	local SPEAR_NOT_CHARGE_IDS = { ["71001061734896"] = true, ["129669521834246"] = true } -- Take Out / Put Away Spear
+
+	local HA = {
+		Color = Color3.fromRGB(0, 0, 0),
+		FillColor = Color3.fromRGB(128, 128, 128),
+		Pool = {}, FloorY = {},
+	}
+	obj.Settings = HA
+
+	local rayParams = RaycastParams.new()
+	rayParams.FilterType = Enum.RaycastFilterType.Exclude
+	rayParams.RespectCanCollide = true
+
+	local function isKiller(plr)
+		local team = plr.Team and string.lower(plr.Team.Name) or ""
+		if string.find(team, "killer", 1, true) then return true end
+		local ch = plr.Character
+		if ch and (ch:GetAttribute("MorphedKiller") or ch:GetAttribute("Role") == "Killer"
+			or ch:GetAttribute("IsKiller") == true) then
+			return true
+		end
+		return false
+	end
+
+	local function newLine()
+		local p = Instance.new("Part")
+		p.Name = "KinonHitArea"
+		p.Anchored = true
+		p.CanCollide = false
+		p.CanTouch = false
+		p.CanQuery = false
+		p.CastShadow = false
+		p.Material = Enum.Material.Neon
+		p.Color = HA.Color
+		p.Transparency = 0.05
+		p.Size = Vector3.new(0.2, 0.1, 0.2)
+		p.Parent = workspace
+		return p
+	end
+
+	local function newWedge()
+		local w = Instance.new("WedgePart")
+		w.Name = "KinonHitFill"
+		w.Anchored = true
+		w.CanCollide = false
+		w.CanTouch = false
+		w.CanQuery = false
+		w.CastShadow = false
+		w.Material = Enum.Material.SmoothPlastic
+		w.Color = HA.FillColor
+		w.Transparency = 0.4
+		w.Size = Vector3.new(0.04, 0.1, 0.1)
+		w.Parent = workspace
+		return w
+	end
+
+	local function newAttackPart(name, cylinder)
+		local p = Instance.new("Part")
+		p.Name = name
+		p.Anchored = true
+		p.CanCollide = false
+		p.CanTouch = false
+		p.CanQuery = false
+		p.CastShadow = false
+		p.Material = Enum.Material.Neon
+		p.Color = Color3.new(1, 1, 1)
+		p.Transparency = 1
+		if cylinder then p.Shape = Enum.PartType.Cylinder end
+		p.Size = Vector3.new(0.1, 0.1, 0.1)
+		p.Parent = workspace
+		return p
+	end
+
+	local function setTri(w1, w2, a, b, c, thick)
+		local ab, ac, bc = b - a, c - a, c - b
+		local abd, acd, bcd = ab:Dot(ab), ac:Dot(ac), bc:Dot(bc)
+		if abd > acd and abd > bcd then
+			c, a = a, c
+		elseif acd > bcd and acd > abd then
+			a, b = b, a
+		end
+		ab, ac, bc = b - a, c - a, c - b
+		local cr = ac:Cross(ab)
+		if cr.Magnitude < 1e-4 or bc.Magnitude < 1e-4 then
+			w1.Transparency = 1; w2.Transparency = 1
+			return
+		end
+		local right = cr.Unit
+		local up = bc:Cross(right).Unit
+		local back = bc.Unit
+		local height = math.abs(ab:Dot(up))
+		w1.Transparency = 0.4; w2.Transparency = 0.4
+		w1.Size = Vector3.new(thick, height, math.abs(ab:Dot(back)))
+		w1.CFrame = CFrame.fromMatrix((a + b) / 2, right, up, back)
+		w2.Size = Vector3.new(thick, height, math.abs(ac:Dot(back)))
+		w2.CFrame = CFrame.fromMatrix((a + c) / 2, -right, up, -back)
+	end
+
+	local function lineSeg(part, a, b, thick)
+		local d = (b - a).Magnitude
+		if d < 0.01 then part.Transparency = 1; return end
+		part.Transparency = 0.05
+		part.Size = Vector3.new(thick, 0.1, d)
+		part.CFrame = CFrame.lookAt((a + b) / 2, b)
+	end
+
+	local function groundPoint(x, z, floorY)
+		local res = workspace:Raycast(Vector3.new(x, floorY + 3, z), Vector3.new(0, -9, 0), rayParams)
+		local y = floorY
+		if res and math.abs(res.Position.Y - floorY) <= 2.5 then y = res.Position.Y end
+		return Vector3.new(x, y + 0.1, z)
+	end
+
+	local function edgePoints(fromP, toP, floorY)
+		local pts = { fromP }
+		for i = 1, EDGE_STEPS - 1 do
+			local t = i / EDGE_STEPS
+			pts[#pts + 1] = groundPoint(
+				fromP.X + (toP.X - fromP.X) * t,
+				fromP.Z + (toP.Z - fromP.Z) * t,
+				floorY)
+		end
+		pts[#pts + 1] = toP
+		return pts
+	end
+
+	local function pointAt(pts, cum, s)
+		local n = #pts
+		if s <= 0 then return pts[1] end
+		if s >= cum[n] then return pts[n] end
+		local i = 2
+		while cum[i] < s do i = i + 1 end
+		local seg = cum[i] - cum[i - 1]
+		local t = seg > 1e-6 and (s - cum[i - 1]) / seg or 0
+		return pts[i - 1]:Lerp(pts[i], t)
+	end
+
+	local function dashSide(lines, idx, pts, thick)
+		local cum = { 0 }
+		for i = 2, #pts do cum[i] = cum[i - 1] + (pts[i] - pts[i - 1]).Magnitude end
+		local total = cum[#pts]
+		if total < 0.2 then return idx end
+		local n = math.max(1, math.floor((total + GAP) / (DASH + GAP) + 0.5))
+		local period = (total + GAP) / n
+		local dashLen = math.max(0.3, period - GAP)
+		for k = 0, n - 1 do
+			if idx >= DASH_MAX then break end
+			local a = pointAt(pts, cum, k * period)
+			local b = pointAt(pts, cum, k * period + dashLen)
+			idx = idx + 1
+			lineSeg(lines[idx], a, b, thick)
+			lines[idx].Color = HA.Color
+		end
+		return idx
+	end
+
+	local function ensureArea(lines)
+		if lines.hasArea then return end
+		lines.hasArea = true
+		for i = 1, DASH_MAX do lines[i] = newLine() end
+	end
+
+	local function dropArea(lines)
+		if not lines.hasArea then return end
+		lines.hasArea = false
+		for i = 1, DASH_MAX do
+			local l = lines[i]
+			if l then pcall(function() l:Destroy() end); lines[i] = nil end
+		end
+		if lines.fill then
+			for _, w in ipairs(lines.fill) do pcall(function() w:Destroy() end) end
+			lines.fill = nil
+		end
+		lines.lastXZ = nil
+	end
+
+	local function hideAttack(lines)
+		local atk = lines.atk
+		if atk then
+			atk.line.Transparency = 1
+			atk.dot.Transparency = 1
+		end
+	end
+
+	local function destroyAttack(lines)
+		local atk = lines.atk
+		if atk then
+			pcall(function() atk.line:Destroy() end)
+			pcall(function() atk.dot:Destroy() end)
+			lines.atk = nil
+		end
+	end
+
+	local function drawAttack(lines, origin, dir, camPos)
+		local atk = lines.atk
+		if not atk then
+			atk = {
+				line = newAttackPart("KinonAttackLine", false),
+				dot = newAttackPart("KinonAttackDot", true),
+			}
+			lines.atk = atk
+		end
+		local res = workspace:Raycast(origin, dir * LINE_LEN, rayParams)
+		local len = res and (res.Position - origin).Magnitude or LINE_LEN
+		if len < 0.3 then
+			hideAttack(lines)
+			return
+		end
+		local thick = math.clamp((origin - camPos).Magnitude * 0.004, 0.12, 0.3)
+		atk.line.Size = Vector3.new(thick, thick, len)
+		atk.line.CFrame = CFrame.lookAt(origin + dir * (len / 2), origin + dir * len)
+		atk.line.Transparency = 0.1
+
+		if res then
+			local dsz = math.clamp((res.Position - camPos).Magnitude * 0.02, 0.9, 2.2)
+			local pos = res.Position + res.Normal * 0.03
+			atk.dot.Size = Vector3.new(0.05, dsz, dsz)
+			atk.dot.CFrame = CFrame.lookAt(pos, pos + res.Normal) * CFrame.Angles(0, math.rad(90), 0)
+			atk.dot.Transparency = 0.1
+		else
+			atk.dot.Transparency = 1
+		end
+	end
+
+	local function isAttacking(char)
+		local hum = char:FindFirstChildOfClass("Humanoid")
+		local animator = hum and hum:FindFirstChildOfClass("Animator")
+		if not animator then return false end
+		local ok, tracks = pcall(function() return animator:GetPlayingAnimationTracks() end)
+		if not ok or not tracks then return false end
+		local isVeil = char:GetAttribute("MorphedKiller") == "Veil" or char:GetAttribute("Veil") == true
+			or string.find(string.lower(char.Name), "veil", 1, true) ~= nil
+		for _, t in ipairs(tracks) do
+			local id = KINON_AnimationId(t)
+
+			if id == HIDDEN_DASH_ID then
+				local playing, pos = false, 0
+				pcall(function() playing = t.IsPlaying; pos = t.TimePosition or 0 end)
+				if playing and pos <= 1.5 then return true end
+			end
+
+			if id ~= "" and SPEAR_CHARGE_IDS[id] then
+				local playing = false
+				pcall(function() playing = t.IsPlaying end)
+				if playing then return true end
+			elseif isVeil and id ~= "" and not SPEAR_NOT_CHARGE_IDS[id] then
+				local label = ""
+				pcall(function()
+					label = string.lower(tostring(t.Name or "") .. " " .. tostring(t.Animation and t.Animation.Name or ""))
+				end)
+				if label:find("charge", 1, true) or label:find("throw", 1, true) then
+					local playing = false
+					pcall(function() playing = t.IsPlaying end)
+					if playing then return true end
+				end
+			end
+
+			if id ~= "" and not KINON_IgnoredParryAnimationIds[id] and not VD_NO_PARRY_ANIMS[id] then
+				local optional = VD_OPTIONAL_ATTACK_ANIMS[id]
+				if optional or KINON_ParryAnimationIds[id] then
+					local playing, pos = false, 0
+					pcall(function() playing = t.IsPlaying; pos = t.TimePosition or 0 end)
+					if playing and pos <= (optional and 1.2 or 0.55) then return true end
+				end
+			end
+		end
+		return false
+	end
+
+	local function release(plr)
+		local lines = HA.Pool[plr]
+		if lines then
+			dropArea(lines)
+			destroyAttack(lines)
+			HA.Pool[plr] = nil
+		end
+		HA.FloorY[plr] = nil
+	end
+
+	local function releaseAll()
+		for plr in pairs(HA.Pool) do release(plr) end
+	end
+
+	local function step(dt, wantArea, wantLine)
+		local cam = workspace.CurrentCamera
+		if not cam then return end
+		local camPos = cam.CFrame.Position
+		local now = os.clock()
+		local fillOn = false -- isi warna di dalam Hit Area dihapus (kosong, hanya garis tepi)
+
+		local filter = { cam }
+		for _, pl in ipairs(Players:GetPlayers()) do
+			if pl.Character then filter[#filter + 1] = pl.Character end
+		end
+		rayParams.FilterDescendantsInstances = filter
+
+		for _, plr in ipairs(Players:GetPlayers()) do
+			local char = plr.Character
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			if hrp and hum and hum.Health > 0 and isKiller(plr) and (hrp.Position - camPos).Magnitude <= MAX_DIST then
+				local lines = HA.Pool[plr]
+				if not lines then
+					lines = {}
+					HA.Pool[plr] = lines
+				end
+
+				local look = hrp.CFrame.LookVector
+				local flat = Vector3.new(look.X, 0, look.Z)
+				if flat.Magnitude < 0.01 then flat = Vector3.new(0, 0, -1) end
+				flat = flat.Unit
+				local alpha = 1 - math.exp(-(dt or 0.016) * 20)
+				local sFlat = lines.smFlat
+				if not sFlat then
+					sFlat = flat
+				else
+					sFlat = sFlat:Lerp(flat, alpha)
+					if sFlat.Magnitude < 0.01 then sFlat = flat end
+					sFlat = sFlat.Unit
+				end
+				lines.smFlat = sFlat
+
+				if wantArea then
+					ensureArea(lines)
+
+					local hip = (hum.HipHeight and hum.HipHeight > 0) and hum.HipHeight or 2
+					local feetY = hrp.Position.Y - (hip + hrp.Size.Y / 2)
+					local origin = Vector3.new(hrp.Position.X, feetY + 1.5, hrp.Position.Z)
+					local floorHit = workspace:Raycast(origin, Vector3.new(0, -14, 0), rayParams)
+					local targetY = floorHit and floorHit.Position.Y or feetY
+					local prevY = HA.FloorY[plr]
+					local floorY
+					if prevY and math.abs(targetY - prevY) < 2.5 then
+						floorY = prevY + (targetY - prevY) * 0.4 -- haluskan supaya tidak loncat-loncat
+					else
+						floorY = targetY
+					end
+					HA.FloorY[plr] = floorY
+
+					local apexXZ = Vector3.new(hrp.Position.X, 0, hrp.Position.Z)
+					local sXZ = lines.smXZ
+					if not sXZ or (sXZ - apexXZ).Magnitude > 12 then sXZ = apexXZ else sXZ = sXZ:Lerp(apexXZ, alpha) end
+					lines.smXZ = sXZ
+
+					local unchanged = lines.lastXZ ~= nil and (lines.lastXZ - sXZ).Magnitude < 0.004
+						and math.abs((lines.lastFloorY or 0) - floorY) < 0.01
+						and lines.lastFlat ~= nil and lines.lastFlat:Dot(sFlat) > 0.99995
+						and lines.lastFill == fillOn and lines.lastColor == HA.Color and lines.lastFillColor == HA.FillColor
+					if not unchanged then
+						lines.lastXZ, lines.lastFloorY, lines.lastFlat = sXZ, floorY, sFlat
+						lines.lastFill, lines.lastColor, lines.lastFillColor = fillOn, HA.Color, HA.FillColor
+
+						local ax, az = sXZ.X, sXZ.Z
+						local apexP = Vector3.new(ax, floorY + 0.1, az)
+
+						local arc = {}
+						for k = 0, SEG do
+							local ang = math.rad(-ANGLE / 2 + ANGLE * (k / SEG))
+							local d = (CFrame.Angles(0, ang, 0) * sFlat) * RANGE
+							arc[k + 1] = groundPoint(ax + d.X, az + d.Z, floorY)
+						end
+						local left = edgePoints(apexP, arc[1], floorY)
+						local right = edgePoints(arc[SEG + 1], apexP, floorY)
+
+						local thick = math.clamp((apexP - camPos).Magnitude * 0.006, 0.18, 0.45)
+						local idx = dashSide(lines, 0, left, thick)
+						idx = dashSide(lines, idx, arc, thick)
+						idx = dashSide(lines, idx, right, thick)
+						for i = idx + 1, DASH_MAX do lines[i].Transparency = 1 end
+
+						if fillOn then
+							if not lines.fill then
+								lines.fill = {}
+								for i = 1, SEG * 2 do lines.fill[i] = newWedge() end
+							end
+							local fy = Vector3.new(0, -0.04, 0)
+							for k = 1, SEG do
+								setTri(lines.fill[k * 2 - 1], lines.fill[k * 2], apexP + fy, arc[k] + fy, arc[k + 1] + fy, 0.04)
+							end
+							for _, w in ipairs(lines.fill) do w.Color = HA.FillColor end
+						elseif lines.fill then
+							for _, w in ipairs(lines.fill) do pcall(function() w:Destroy() end) end
+							lines.fill = nil
+						end
+					end
+				else
+					dropArea(lines)
+				end
+
+				if wantLine then
+					if State.ESPPlayer.AttackLineAlways == true or isAttacking(char) then lines.attackUntil = now + LINE_LINGER end
+					if (lines.attackUntil or 0) > now then
+						drawAttack(lines, hrp.Position, sFlat, camPos)
+					else
+						hideAttack(lines)
+					end
+				else
+					destroyAttack(lines)
+				end
+			else
+				release(plr)
+			end
+		end
+	end
+
+	track(RunService.RenderStepped:Connect(function(dt)
+		if unloaded then return end
+		local S = State.ESPPlayer
+		local area = S.Enabled and S.HitArea == true
+		local line = S.Enabled and S.AttackLine == true
+		if not area and not line then
+			if next(HA.Pool) then releaseAll() end
+			return
+		end
+		if not pcall(step, dt, area, line) then releaseAll() end
+	end))
+
+	track(Players.PlayerRemoving:Connect(function(plr) release(plr) end))
+
+	function obj:Destroy()
+		releaseAll()
+	end
+
+	return obj
+end)()
+
+do
+	local s = State.ESPPlayer
+	local esp = State.PlayerESPObj
+	local card = addCard(5, "eye", "ESP Player", "Survivor & Killer", "ESPPlayer")
+	local function opt(label, icn, field, colorKey)
+		addCheckbox(card, label, icn,
+			function() return s[field] end,
+			function(v) s[field] = v; fire("ESPPlayer") end,
+			colorKey and function() return esp.Palette[colorKey] end or nil,
+			colorKey and function(c) esp:SetColor(colorKey, c) end or nil)
+	end
+	opt("Show Survivor",  "user",           "ShowPlayer", "Player")
+	opt("Show Killer",    "skull",          "ShowKiller", "Killer")
+	opt("Show Name",      "tag",            "ShowName")
+	opt("Show Distance",  "ruler",          "ShowDist")
+	opt("Show Status",    "heart-pulse",    "ShowStatus")
+	opt("Show Item",      "package",        "ShowItem")
+	opt("Highlight ESP",  "sparkles",       "HLFill")
+	opt("Outline ESP",    "scan",           "HLOutline")
+	opt("Hook Counter",   "link",           "HookCounter")
+	opt("Killer Warning", "triangle-alert", "KillerWarn")
+	addCheckbox(card, "Stun Indicator", "zap",
+		function() return s.StunInd == true end,
+		function(v) s.StunInd = v end)
+	local ss = State.StunSound
+	addCheckbox(card, "Stun Sound", "volume-2",
+		function() return ss.Enabled == true end,
+		function(v) ss.Enabled = v end)
+	addDropdown(card, "Stun Sound Type", "music", State.StunSoundNames,
+		function(v) return v end,
+		function() return ss.Selected end,
+		function(v) ss.Selected = v; pcall(State.StunObj.PreviewStunSound) end)
+	addSlider(card, "Stun Sound Volume %", "volume-2", 10, 500,
+		function() return math.clamp(math.floor(tonumber(ss.Volume) or 150), 10, 500) end,
+		function(v) ss.Volume = v end)
+
+	local hit = State.HitAreaObj
+	addCheckbox(card, "Killer Hit Area", "target",
+		function() return s.HitArea == true end,
+		function(v) s.HitArea = v end,
+		function() return hit.Settings.Color end,
+		function(c) hit.Settings.Color = c end)
+	addCheckbox(card, "Attack Line", "move-right",
+		function() return s.AttackLine == true end,
+		function(v) s.AttackLine = v end)
+	addCheckbox(card, "Attack Line Always On", "infinity",
+		function() return s.AttackLineAlways == true end,
+		function(v) s.AttackLineAlways = v end)
+end
+
+do
+	local s = State.ESPWorld
+	local esp = State.WorldESPObj
+	local card = addCard(6, "globe", "ESP World", "Objects on the map", "ESPWorld")
+	local function opt(label, icn, field, colorKey)
+		addCheckbox(card, label, icn,
+			function() return s[field] end,
+			function(v) s[field] = v; fire("ESPWorld") end,
+			colorKey and function() return esp.Palette[colorKey] end or nil,
+			colorKey and function(c) esp:SetColor(colorKey, c) end or nil)
+	end
+	opt("Generator",       "zap",        "Generator", "Generator")
+	opt("Generator Info",  "percent",    "GeneratorName")
+	opt("Pallet",          "layers",     "Pallet", "Pallet")
+	opt("Window",          "app-window", "Window", "Window")
+	opt("Hook",            "anchor",     "Hook", "Hook")
+	opt("Gate",            "door-open",  "Gate", "Gate")
+	opt("SCP",             "ghost",      "SCP", "SCP")
+	opt("SCP Slow Only",   "gauge",      "SCPOnlySlow")
+	opt("Pumpkin",         "candy",      "Pumpkin", "Pumpkin")
+	opt("Bear Trap",       "bomb",       "BearTrap", "BearTrap")
+	opt("Hide Trap Text",  "eye-off",    "BearTrapNoText")
+	opt("Highlight ESP",   "sparkles",   "HLFill")
+	opt("Outline ESP",     "scan",       "HLOutline")
+end
+
+State.Utilities = {
+	Enabled = false,
+	AntiBlindFlashlightK = false, DashLockK = false, AimlockAttackK = false, NoSlowDown = false,
+	PalletReflexS = false,
+	AutoRun = false,
+	AlwaysFastVaultS = false, UnlimitedVaultS = false,
+	AutoDodgeAbyssS = false,
+	DashRadius = 50, AimRadius = 50,
+}
+State.UtilityHandlers = {}
+Hooks.Utilities = function(s)
+	for key, handler in pairs(State.UtilityHandlers) do
+		pcall(handler, s.Enabled and s[key] == true)
+	end
+end
+
+do
+	local Lighting = game:GetService("Lighting")
+	local RunService = game:GetService("RunService")
+	local ENV = getgenv and getgenv() or _G
+	ENV.VD = ENV.VD or {}
+	State.AntiBlindOn = false
+	local hb
+	local saved = {}
+
+	State.IsKillerNow = function()
+		local char = LP.Character
+		if not char then return false end
+		if LP.Team and string.find(string.lower(LP.Team.Name), "killer", 1, true) then return true end
+		if char:GetAttribute("MorphedKiller") then return true end
+		return false
+	end
+
+	local function remember(inst, prop)
+		saved[#saved + 1] = { inst, prop, inst[prop] }
+	end
+
+	local function clearVisuals()
+		if not State.AntiBlindOn or not State.IsKillerNow() then return end
+		for _, child in ipairs(Lighting:GetChildren()) do
+			if child:IsA("BlurEffect") then
+				if child.Enabled or child.Size ~= 0 then
+					remember(child, "Enabled"); remember(child, "Size")
+					child.Size = 0
+					child.Enabled = false
+				end
+			elseif child:IsA("ColorCorrectionEffect") then
+				if child.Enabled and (child.Brightness < -0.2 or child.Contrast > 0.5) then
+					remember(child, "Enabled")
+					child.Enabled = false
+				end
+			end
+		end
+		local pg = LP:FindFirstChild("PlayerGui")
+		if pg then
+			for _, gui in ipairs(pg:GetChildren()) do
+				if gui:IsA("ScreenGui") and gui.Enabled then
+					local n = string.lower(gui.Name)
+					if n:find("blind", 1, true) or n:find("flash", 1, true) then
+						remember(gui, "Enabled")
+						gui.Enabled = false
+					end
+				end
+			end
+		end
+	end
+
+	State.UtilityHandlers.AntiBlindFlashlightK = function(on)
+		State.AntiBlindOn = on == true
+		ENV.VD.KILLER_AntiBlind = State.AntiBlindOn
+		if hb then hb:Disconnect(); hb = nil end
+		if State.AntiBlindOn then
+			hb = RunService.Heartbeat:Connect(clearVisuals)
+		else
+			for i = #saved, 1, -1 do
+				local e = saved[i]
+				pcall(function() e[1][e[2]] = e[3] end)
+			end
+			saved = {}
+		end
+	end
+end
+do
+	local ENV = getgenv and getgenv() or _G
+	ENV.VD = ENV.VD or {}
+	ENV.VD.NoFallDamage = false
+	local function sync()
+		ENV.VD.NoFallDamage = (State.NoSlow.K or State.NoSlow.S) and true or false
+	end
+	State.UtilityHandlers.NoSlowDown = function(on)
+		State.NoSlow.K = on == true
+		State.NoSlow.S = on == true
+		sync()
+	end
+end
+
+do
+	local AlwaysFastVaultEnabled = false
+
+	local function InstallAlwaysFastVaultHooks()
+		local rs = game:GetService("ReplicatedStorage")
+		pcall(function()
+			local module = require(rs:WaitForChild("Modules"):WaitForChild("Survivors"):WaitForChild("SurvivorVault"))
+			if module and type(module.evaluate) == "function" and not module._VDFastVaultHooked then
+				module._VDOriginalEvaluate = module.evaluate
+				module.evaluate = function(self, ...)
+					if AlwaysFastVaultEnabled then
+						return true, "ready", 5
+					end
+					return module._VDOriginalEvaluate(self, ...)
+				end
+				module._VDFastVaultHooked = true
+			end
+		end)
+		pcall(function()
+			local module = require(rs:WaitForChild("Modules"):WaitForChild("Survivors"):WaitForChild("SurvivorAnimationsController"))
+			if module and type(module._validateFastVault) == "function" and not module._VDFastVaultHooked then
+				module._VDOriginalValidateFastVault = module._validateFastVault
+				module._validateFastVault = function(self, ...)
+					if AlwaysFastVaultEnabled then
+						return true, "ready", 5
+					end
+					return module._VDOriginalValidateFastVault(self, ...)
+				end
+				module._VDFastVaultHooked = true
+			end
+		end)
+	end
+
+	local fvConn
+	local function runInstall()
+		task.spawn(function()
+			for _ = 1, 20 do
+				if unloaded or not AlwaysFastVaultEnabled then break end
+				InstallAlwaysFastVaultHooks()
+				task.wait(0.25)
+			end
+		end)
+	end
+	State.UtilityHandlers.AlwaysFastVaultS = function(state)
+		AlwaysFastVaultEnabled = state and true or false
+		if fvConn then fvConn:Disconnect(); fvConn = nil end
+		if AlwaysFastVaultEnabled then
+			runInstall()
+			fvConn = LP.CharacterAdded:Connect(runInstall)
+		end
+	end
+end
+
+do
+	local CollectionService = game:GetService("CollectionService")
+	local UnlimitedVaultEnabled = false
+	local UnlimitedVaultConn = nil
+
+	local function EnableUnlimitedVault()
+		if UnlimitedVaultEnabled then return end
+		UnlimitedVaultEnabled = true
+		if UnlimitedVaultConn then UnlimitedVaultConn:Disconnect() end
+
+		for _, v in ipairs(CollectionService:GetTagged("Blocked")) do
+			CollectionService:RemoveTag(v, "Blocked")
+		end
+
+		UnlimitedVaultConn = CollectionService:GetInstanceAddedSignal("Blocked"):Connect(function(instance)
+			CollectionService:RemoveTag(instance, "Blocked")
+		end)
+	end
+
+	local function DisableUnlimitedVault()
+		UnlimitedVaultEnabled = false
+		if UnlimitedVaultConn then
+			UnlimitedVaultConn:Disconnect()
+			UnlimitedVaultConn = nil
+		end
+	end
+
+	State.UtilityHandlers.UnlimitedVaultS = function(state)
+		if state then EnableUnlimitedVault() else DisableUnlimitedVault() end
+	end
+end
+do
+	local U = State.Utilities
+	local DASH_ANIM = "rbxassetid://98163597193511"
+	local flags = { dash = false, aim = false }
+	local conn, charConn, animConn, guiConn
+	local dashActive = false
+	local attackInput, attackAt, tapUntil = nil, 0, 0
+	local dashTarget, aimTarget
+	local guiHooked = false
+
+	local function isSurvivor(p)
+		local t = p and p.Team and p.Team.Name
+		return t ~= nil and string.find(string.lower(t), "survivor", 1, true) ~= nil
+	end
+
+	local function myRoot()
+		local c = LP.Character
+		return c and c:FindFirstChild("HumanoidRootPart")
+	end
+
+	local function hooked(ch)
+		return ch:GetAttribute("IsHooked") == true or ch:GetAttribute("State") == "Hooked"
+	end
+
+	local function closestWithin(radius)
+		local root = myRoot()
+		if not root then return nil end
+		local best, bestDist = nil, radius
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr ~= LP and isSurvivor(plr) and plr.Character then
+				local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+				local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+				if hum and hrp and hum.Health > 30 and not hooked(plr.Character) then
+					local d = (hrp.Position - root.Position).Magnitude
+					if d <= bestDist then best, bestDist = hrp, d end
+				end
+			end
+		end
+		return best
+	end
+
+	local function targetValid(part, radius)
+		if not part or not part.Parent then return false end
+		local ch = part.Parent
+		local hum = ch:FindFirstChildOfClass("Humanoid")
+		local root = myRoot()
+		if not hum or not root or hum.Health <= 30 or hooked(ch) then return false end
+		return (part.Position - root.Position).Magnitude <= radius
+	end
+
+	local function hookDashChar(char)
+		task.spawn(function()
+			local hum = char:WaitForChild("Humanoid", 5)
+			local animator = hum and hum:WaitForChild("Animator", 5)
+			if not animator or unloaded then return end
+			if animConn then animConn:Disconnect() end
+			animConn = animator.AnimationPlayed:Connect(function(track)
+				local id = track.Animation and track.Animation.AnimationId
+				if id == DASH_ANIM and flags.dash then
+					dashActive = true
+					track.Stopped:Connect(function() dashActive = false end)
+					task.delay(1.5, function() dashActive = false end)
+				end
+			end)
+		end)
+	end
+
+	local function hookAttackButton(obj)
+		if not obj:IsA("GuiButton") then return end
+		if obj:IsDescendantOf(Gui) then return end
+		local n = string.lower(obj.Name)
+		if string.find(n, "attack", 1, true) or string.find(n, "hit", 1, true)
+			or string.find(n, "slash", 1, true) or string.find(n, "swing", 1, true) then
+			obj.InputBegan:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.Touch
+					or input.UserInputType == Enum.UserInputType.MouseButton1 then
+					attackInput, attackAt = input, os.clock()
+				end
+			end)
+			obj.TouchTap:Connect(function() tapUntil = os.clock() + 0.25 end)
+		end
+	end
+
+	local function attackHeld()
+		if attackInput then
+			local st = attackInput.UserInputState
+			if st == Enum.UserInputState.End or st == Enum.UserInputState.Cancel or os.clock() - attackAt > 8 then
+				attackInput = nil
+			else
+				return true
+			end
+		end
+		return os.clock() < tapUntil
+	end
+
+	local function step()
+		if unloaded then return end
+		local cam = workspace.CurrentCamera
+		if not cam then return end
+		if flags.dash and dashActive then
+			local radius = tonumber(U.DashRadius) or 50
+			if not targetValid(dashTarget, radius * 1.3) then dashTarget = closestWithin(radius) end
+			if dashTarget then cam.CFrame = CFrame.new(cam.CFrame.Position, dashTarget.Position) end
+		else
+			dashTarget = nil
+		end
+		if flags.aim and LP.Team and LP.Team.Name == "Killer" and attackHeld() then
+			local radius = tonumber(U.AimRadius) or 50
+			if not targetValid(aimTarget, radius * 1.3) then aimTarget = closestWithin(radius) end
+			if aimTarget then cam.CFrame = CFrame.new(cam.CFrame.Position, aimTarget.Position) end
+		else
+			aimTarget = nil
+		end
+	end
+
+	local function sync()
+		local need = flags.dash or flags.aim
+		if need and not conn then
+			conn = RunService.RenderStepped:Connect(function() pcall(step) end)
+			if LP.Character then hookDashChar(LP.Character) end
+			charConn = LP.CharacterAdded:Connect(hookDashChar)
+			if not guiHooked then
+				guiHooked = true
+				task.spawn(function()
+					local pg = LP:WaitForChild("PlayerGui", 10)
+					if not pg then return end
+					for _, d in ipairs(pg:GetDescendants()) do pcall(hookAttackButton, d) end
+					guiConn = pg.DescendantAdded:Connect(function(d) pcall(hookAttackButton, d) end)
+				end)
+			end
+		elseif not need and conn then
+			conn:Disconnect(); conn = nil
+			if charConn then charConn:Disconnect(); charConn = nil end
+			if animConn then animConn:Disconnect(); animConn = nil end
+			if guiConn then guiConn:Disconnect(); guiConn = nil end
+			guiHooked = false
+			dashActive, dashTarget, aimTarget = false, nil, nil
+		end
+	end
+
+	State.UtilityHandlers.DashLockK = function(on)
+		flags.dash = on == true
+		if not flags.dash then dashActive = false end
+		sync()
+	end
+	State.UtilityHandlers.AimlockAttackK = function(on)
+		flags.aim = on == true
+		if not flags.aim then aimTarget, attackInput, tapUntil = nil, nil, 0 end
+		sync()
+	end
+end
+
+do
+	local RunService = game:GetService("RunService")
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local ENV = getgenv and getgenv() or _G
+	ENV.VD = ENV.VD or {}
+	local PR = { on = false, used = {}, lastScan = 0, lastDrop = 0, cache = {}, cacheAt = 0 }
+	State.PalletDist = 20
+	local hb, charConn
+
+	local function isSurvivor()
+		local team = LP.Team
+		return team ~= nil and (team.Name == "Survivors" or team.Name == "Survivor")
+	end
+
+	local function killerRoot()
+		for _, plr in ipairs(Players:GetPlayers()) do
+			if plr ~= LP and plr.Character and plr.Team and string.find(string.lower(plr.Team.Name), "killer", 1, true) then
+				local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
+				if hrp then return hrp end
+			end
+		end
+		return nil
+	end
+
+	local function pallets()
+		local now = os.clock()
+		if now - PR.cacheAt < 1 then return PR.cache end
+		PR.cacheAt = now
+		local list = {}
+		local map = workspace:FindFirstChild("Map")
+		if map then
+			for _, obj in ipairs(map:GetDescendants()) do
+				if obj.Name == "Palletwrong" and (obj:IsA("Model") or obj:IsA("Folder")) then
+					list[#list + 1] = obj
+				end
+			end
+		end
+		PR.cache = list
+		return list
+	end
+
+	local function isDropped(m)
+		if not m or not m.Parent then return true end
+		if PR.used[m] then return true end
+		local ok1, d = pcall(function() return m:GetAttribute("Destroyed") end)
+		if ok1 and d == true then return true end
+		local ok2, b = pcall(function() return m:GetAttribute("Broken") end)
+		if ok2 and b == true then return true end
+		if not m:FindFirstChildWhichIsA("BasePart", true) then return true end
+		return false
+	end
+
+	local function slidePoint(m)
+		local sp = m:FindFirstChild("PalletPointSlide")
+		if sp then return sp end
+		for _, c in ipairs(m:GetDescendants()) do
+			if c.Name == "PalletPointSlide" then return c end
+		end
+		return m:FindFirstChild("PalletPoint")
+	end
+
+	local function dropEvent()
+		local r = ReplicatedStorage:FindFirstChild("Remotes")
+		local f = r and r:FindFirstChild("Pallet")
+		return f and f:FindFirstChild("PalletDropEvent")
+	end
+
+	local function step()
+		if not PR.on or not isSurvivor() then return end
+		local now = os.clock()
+		if now - PR.lastScan < 0.2 then return end
+		PR.lastScan = now
+		if now - PR.lastDrop < 2.5 then return end
+		pcall(function()
+			local char = LP.Character
+			local root = char and char:FindFirstChild("HumanoidRootPart")
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			if not root or not hum or hum.Health <= 0 then return end
+			local k = killerRoot()
+			if not k then return end
+			if (root.Position - k.Position).Magnitude > State.PalletDist then return end
+			local ev = dropEvent()
+			if not ev then return end
+			local best, bestD = nil, 8
+			for _, pal in ipairs(pallets()) do
+				if not isDropped(pal) then
+					local ref = pal:FindFirstChild("PalletPoint") or pal:FindFirstChild("PalletPointSlide") or pal:FindFirstChildWhichIsA("BasePart", true)
+					if ref then
+						local d = (root.Position - ref.Position).Magnitude
+						if d < bestD then bestD = d; best = pal end
+					end
+				end
+			end
+			if best then
+				local target = slidePoint(best)
+				if target then
+					pcall(function() ev:FireServer(target) end)
+					PR.used[best] = true
+					PR.lastDrop = os.clock()
+				end
+			end
+		end)
+	end
+
+	State.UtilityHandlers.PalletReflexS = function(on)
+		PR.on = on == true
+		ENV.VD.PalletReflex = PR.on
+		if hb then hb:Disconnect(); hb = nil end
+		if charConn then charConn:Disconnect(); charConn = nil end
+		PR.used = {}
+		PR.cacheAt = 0
+		if PR.on then
+			hb = RunService.Heartbeat:Connect(step)
+			charConn = LP.CharacterAdded:Connect(function()
+				task.wait(0.5)
+				PR.used = {}
+				PR.cacheAt = 0
+			end)
+		end
+	end
+end
+do
+	local ReplicatedStorage = game:GetService("ReplicatedStorage")
+	local ABYSS_ANIMATION_ID = "100014992013740"
+	local TRIGGER_RANGE = 40
+	local CROUCH_HOLD = 1.2
+
+	local conns = {}
+	local watchedChars = setmetatable({}, { __mode = "k" })
+	local watchedAnimators = setmetatable({}, { __mode = "k" })
+	local running = false
+	local busy = false
+
+	local function setCrouchServer(v)
+		pcall(function()
+			ReplicatedStorage.Remotes.Mechanics.ChangeAttribute:FireServer("Crouchingserver", v)
+		end)
+	end
+
+	local function clickCrouchButton()
+		pcall(function()
+			local pg = LP:FindFirstChildOfClass("PlayerGui")
+			local survMob = pg and pg:FindFirstChild("Survivor-mob")
+			local controls = survMob and survMob:FindFirstChild("Controls")
+			local crouchBtn = controls and controls:FindFirstChild("crouch")
+			if crouchBtn then firesignal(crouchBtn.MouseButton1Click) end
+		end)
+	end
+
+	local function triggerCrouch()
+		if busy then return end
+		busy = true
+		task.spawn(function()
+			local startT = tick()
+			local char = LP.Character
+			if char then
+				local humanoid = char:FindFirstChildOfClass("Humanoid")
+				pcall(function() char:SetAttribute("Crouching", true) end)
+				setCrouchServer(true)
+				pcall(function() ReplicatedStorage.Remotes.Chase.Runevent:FireServer(char, false) end)
+				if humanoid then pcall(function() humanoid:ChangeState(Enum.HumanoidStateType.Landed) end) end
+				clickCrouchButton()
+				while tick() - startT < CROUCH_HOLD and not unloaded do
+					setCrouchServer(true)
+					task.wait(0.1)
+				end
+				pcall(function() char:SetAttribute("Crouching", false) end)
+				setCrouchServer(false)
+				if humanoid then pcall(function() humanoid:ChangeState(Enum.HumanoidStateType.Landed) end) end
+				clickCrouchButton()
+			end
+			busy = false
+		end)
+	end
+
+	local function attachAnimator(killerChar, animator)
+		if not animator or watchedAnimators[animator] then return end
+		watchedAnimators[animator] = true
+		conns[#conns + 1] = animator.AnimationPlayed:Connect(function(playedTrack)
+			if not running or unloaded then return end
+			local animation = playedTrack and playedTrack.Animation
+			local animationId = animation and animation.AnimationId or ""
+			if animationId:match("%d+") ~= ABYSS_ANIMATION_ID then return end
+
+			local myChar = LP.Character
+			if not myChar then return end
+			local state = myChar:GetAttribute("State")
+			if myChar:GetAttribute("Knocked") == true
+				or myChar:GetAttribute("IsHooked") == true
+				or state == "Downed" or state == "Dead" then return end
+
+			local myRoot = myChar:FindFirstChild("HumanoidRootPart")
+			local killerRoot = killerChar and killerChar:FindFirstChild("HumanoidRootPart")
+			if myRoot and killerRoot and (myRoot.Position - killerRoot.Position).Magnitude <= TRIGGER_RANGE then
+				triggerCrouch()
+			end
+		end)
+	end
+
+	local function attachChar(killerChar)
+		if not killerChar or watchedChars[killerChar] then return end
+		watchedChars[killerChar] = true
+		task.spawn(function()
+			local humanoid = killerChar:FindFirstChildOfClass("Humanoid") or killerChar:WaitForChild("Humanoid", 5)
+			if not humanoid or not running then return end
+			local animator = humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator", 5)
+			if animator and running then attachAnimator(killerChar, animator) end
+			conns[#conns + 1] = humanoid.ChildAdded:Connect(function(child)
+				if running and child:IsA("Animator") then attachAnimator(killerChar, child) end
+			end)
+		end)
+	end
+
+	local function isKillerPlayer(player)
+		return player.Team ~= nil and string.find(string.lower(player.Team.Name), "killer", 1, true) ~= nil
+	end
+
+	local function watchPlayer(player)
+		if player == LP then return end
+		local function tryAttach()
+			if running and isKillerPlayer(player) and player.Character then
+				attachChar(player.Character)
+			end
+		end
+		conns[#conns + 1] = player.CharacterAdded:Connect(function()
+			task.wait(0.2)
+			tryAttach()
+		end)
+		conns[#conns + 1] = player:GetPropertyChangedSignal("Team"):Connect(tryAttach)
+		tryAttach()
+	end
+
+	State.UtilityHandlers.AutoDodgeAbyssS = function(on)
+		on = on == true
+		for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+		conns = {}
+		watchedChars = setmetatable({}, { __mode = "k" })
+		watchedAnimators = setmetatable({}, { __mode = "k" })
+		running = on
+		if not on then return end
+		for _, player in ipairs(Players:GetPlayers()) do watchPlayer(player) end
+		conns[#conns + 1] = Players.PlayerAdded:Connect(watchPlayer)
+	end
+end
+
+do
+	local VIM = game:GetService("VirtualInputManager")
+	local GuiService = game:GetService("GuiService")
+	local active = false
+
+	local function isSpectating()
+		local t = LP.Team
+		return t ~= nil and t.Name:lower():find("spectator", 1, true) ~= nil
+	end
+	local function releaseShift()
+		pcall(function() VIM:SendKeyEvent(false, Enum.KeyCode.LeftShift, false, game) end)
+	end
+	local function findSprintButton()
+		local pg = LP:FindFirstChildOfClass("PlayerGui")
+		local mob = pg and pg:FindFirstChild("Survivor-mob")
+		local ctl = mob and mob:FindFirstChild("Controls")
+		local sp = ctl and ctl:FindFirstChild("sprint")
+		if not sp then return nil end
+		if sp:IsA("GuiButton") then return sp end
+		local ic = sp:FindFirstChild("icon")
+		if ic and ic:IsA("GuiButton") then return ic end
+		if ic and ic.Parent and ic.Parent:IsA("GuiButton") then return ic.Parent end
+		if sp.Parent and sp.Parent:IsA("GuiButton") then return sp.Parent end
+		return sp
+	end
+	local function tapSprint()
+		local btn = findSprintButton()
+		if not btn then return false end
+		pcall(function()
+			if type(firesignal) == "function" then
+				firesignal(btn.MouseButton1Click)
+				firesignal(btn.MouseButton1Down)
+				task.wait(0.04)
+				firesignal(btn.MouseButton1Up)
+			else
+				local p, sz = btn.AbsolutePosition, btn.AbsoluteSize
+				local inset = GuiService:GetGuiInset()
+				local x = p.X + sz.X / 2 + inset.X
+				local y = p.Y + sz.Y / 2 + inset.Y
+				VIM:SendTouchEvent(9901, 0, x, y)
+				task.wait(0.04)
+				VIM:SendTouchEvent(9901, 2, x, y)
+			end
+		end)
+		return true
+	end
+	local function charAttr(a, b)
+		local ch = LP.Character
+		return ch ~= nil and (ch:GetAttribute(a) == true or (b ~= nil and ch:GetAttribute(b) == true))
+	end
+	local function isCrouching() return charAttr("Crouching", "Crouchingserver") end
+	local function isSprinting() return charAttr("Sprinting", "IsRunning") end
+
+	State.UtilityHandlers.AutoRun = function(on) active = on == true end
+
+	task.spawn(function()
+		local shiftHeld, mobileTouched, lastTap = false, false, 0
+		local tapStreak, pauseUntil = 0, 0
+		while not unloaded do
+			task.wait(0.12)
+			local on = active and not isSpectating()
+			local btn = findSprintButton()
+			local mobile = false
+			if btn ~= nil then
+				local vis = false
+				pcall(function() vis = btn.AbsoluteSize.X > 0 and btn:IsDescendantOf(game) end)
+				mobile = vis and (UserInputService.TouchEnabled or not UserInputService.KeyboardEnabled)
+			end
+			if on then
+				pcall(function()
+					if mobile then
+						local crouch, sprint = isCrouching(), isSprinting()
+						local now = tick()
+						if sprint then tapStreak = 0 end
+						if now - lastTap > 0.6 and now > pauseUntil then
+							if crouch then
+								if sprint then tapSprint(); lastTap = now end
+							elseif not sprint then
+								tapSprint(); lastTap = now
+								tapStreak = tapStreak + 1
+								if tapStreak >= 4 then
+									tapStreak = 0
+									pauseUntil = now + 15
+								end
+							end
+						end
+						mobileTouched = true
+					else
+						VIM:SendKeyEvent(true, Enum.KeyCode.LeftShift, false, game)
+						shiftHeld = true
+					end
+				end)
+			else
+				if shiftHeld then releaseShift(); shiftHeld = false end
+				if mobileTouched then
+					mobileTouched = false
+					pcall(function() if isSprinting() then tapSprint() end end)
+				end
+			end
+		end
+		if shiftHeld then releaseShift() end
+	end)
+end
+
+do
+	local s = State.Utilities
+	local card = addCard(10, "wrench", "Utilities", "Killer and Survivor tools", "Utilities")
+	local function util(role, label, icn, key)
+		addCheckbox(card, label, icn,
+			function() return s[key] end,
+			function(v)
+				s[key] = v
+				local handler = State.UtilityHandlers[key]
+				if handler then pcall(handler, s.Enabled and v) end
+			end, nil, nil, role)
+	end
+	util(nil, "No Slow Down (Anti Fall)", "gauge", "NoSlowDown")
+	util(nil, "Auto Run", "footprints", "AutoRun")
+	util("Killer", "Anti Blind Flashlight", "flashlight-off", "AntiBlindFlashlightK")
+	util("Killer", "Dash Lock", "lock", "DashLockK")
+	util("Killer", "Aimlock Attack", "crosshair", "AimlockAttackK")
+	util("Survivor", "Pallet Reflex", "layers", "PalletReflexS")
+	util("Survivor", "Always Fast Vault", "zap", "AlwaysFastVaultS")
+	util("Survivor", "Unlimited Vault", "infinity", "UnlimitedVaultS")
+	util("Survivor", "Auto Dodge Abyss", "shield", "AutoDodgeAbyssS")
+	addSlider(card, "Dash Lock Radius", "ruler", 20, 150,
+		function() return math.clamp(math.floor(tonumber(s.DashRadius) or 50), 20, 150) end,
+		function(v) s.DashRadius = v end)
+	addSlider(card, "Pallet Reflex Distance", "ruler", 5, 80,
+		function() return math.clamp(math.floor(tonumber(State.PalletDist) or 20), 5, 80) end,
+		function(v) State.PalletDist = v end)
+end
+
+do
+	local s = State.TOF
+	local card = addCard(11, "crosshair", "Aimlock Twist of Fate", "", "TOF")
+	addDropdown(card, "Aimlock Target Mode", "user", { "Killer", "Survivor" },
+		function(v) return v end,
+		function() return s.TargetMode or "Killer" end,
+		function(v) s.TargetMode = v end)
+	addSlider(card, "Aimlock FOV Radius", "ruler", 50, 1000,
+		function() return math.clamp(math.floor(tonumber(s.FOV) or 250), 50, 1000) end,
+		function(v) s.FOV = v end)
+	addSlider(card, "Aimlock Smoothness %", "gauge", 5, 100,
+		function() return math.clamp(math.floor(tonumber(s.Smooth) or 50), 5, 100) end,
+		function(v) s.Smooth = v end)
+	addSlider(card, "Aimlock Prediction %", "move", 0, 100,
+		function() return math.clamp(math.floor(tonumber(s.Predict) or 12), 0, 100) end,
+		function(v) s.Predict = v end)
+	addCheckbox(card, "Visibility Check", "eye",
+		function() return s.Vis end,
+		function(v) s.Vis = v end)
+	addCheckbox(card, "Aimlock Laser", "scan-line",
+		function() return s.ShowLaser end,
+		function(v) s.ShowLaser = v end)
+end
+
+do
+	local s = State.TOFSilent
+	local card = addCard(12, "eye", "Silent Aim Twist of Fate", "", "TOFSilent")
+	addCheckbox(card, "Predict", "move",
+		function() return s.Predict end,
+		function(v) s.Predict = v end)
+	addCheckbox(card, "Predict Zig-Zag", "move",
+		function() return s.ZigZag end,
+		function(v) s.ZigZag = v end)
+	addSlider(card, "Predict Lead %", "gauge", 50, 250,
+		function() return math.clamp(math.floor(tonumber(s.LeadScale) or 100), 50, 250) end,
+		function(v) s.LeadScale = v end)
+	addCheckbox(card, "Show FOV Circle", "circle",
+		function() return s.ShowCircle end,
+		function(v) s.ShowCircle = v end)
+	addCheckbox(card, "Red Laser", "scan-line",
+		function() return s.ShowLaser end,
+		function(v) s.ShowLaser = v end)
+	addSlider(card, "Silent Aim FOV", "ruler", 10, 360,
+		function() return math.clamp(math.floor(tonumber(s.FOV) or 120), 10, 360) end,
+		function(v) s.FOV = v end)
+end
+
+do
+	local s = State.AimFlash
+	local card = addCard(13, "flashlight", "Aimlock Flashlight", "Survivor flashlight aimlock", "AimFlash")
+	addDropdown(card, "Target Body", "user", { "Head", "UpperTorso", "Torso", "HumanoidRootPart" },
+		function(v) return v end,
+		function() return s.AimPart or "Head" end,
+		function(v) s.AimPart = v end)
+	addSlider(card, "Max Range", "ruler", 20, 250,
+		function() return math.clamp(math.floor(tonumber(s.Range) or 120), 20, 250) end,
+		function(v) s.Range = v end)
+	addSlider(card, "Smoothness %", "gauge", 5, 100,
+		function() return math.clamp(math.floor(tonumber(s.Smooth) or 35), 5, 100) end,
+		function(v) s.Smooth = v end)
+	addCheckbox(card, "Show Laser", "scan-line",
+		function() return s.ShowLaser end,
+		function(v) s.ShowLaser = v end)
+end
+
+do
+	local AV = { Enabled = false }
+	State.AvatarVisual = AV
+	local selectedId = LP.UserId
+	local selectedServer, presetName = nil, "Self Avatar"
+	local source = "preset"
+	local lastId = nil
+	local korless = { on = false, conn = nil }
+	local usernameInput = ""
+	local busy = false
+	local card
+
+	local function say(t) pcall(function() card.sub.Text = t end) end
+
+	local function applyKorlessOnce()
+		local ch = LP.Character
+		if not ch then return end
+		local leg = ch:FindFirstChild("Right Leg") or ch:FindFirstChild("RightUpperLeg")
+		local head = ch:FindFirstChild("Head")
+		if not leg or not head or ch:FindFirstChild("KorlessHead") then return end
+		head.Transparency = 1
+		local face = head:FindFirstChild("face")
+		if face then face:Destroy() end
+		leg.Transparency = 1
+		local mp = Instance.new("MeshPart")
+		mp.Name = "KorlessHead"
+		mp.Size = Vector3.new(0.85, 0.85, 0.85)
+		mp.CanCollide = false
+		mp.MeshId = "rbxassetid://902942096"
+		mp.TextureID = "rbxassetid://902843398"
+		mp.CFrame = leg.CFrame * CFrame.new(0, 0.7, 0)
+		mp.Parent = ch
+		local w = Instance.new("WeldConstraint")
+		w.Part0 = leg
+		w.Part1 = mp
+		w.Parent = mp
+	end
+
+	local function removeKorless()
+		local ch = LP.Character
+		if not ch then return end
+		local kh = ch:FindFirstChild("KorlessHead")
+		if kh then kh:Destroy() end
+		local head = ch:FindFirstChild("Head")
+		if head then head.Transparency = 0 end
+		local leg = ch:FindFirstChild("Right Leg") or ch:FindFirstChild("RightUpperLeg")
+		if leg then leg.Transparency = 0 end
+	end
+
+	local function setKorless(v)
+		korless.on = v and true or false
+		if korless.conn then korless.conn:Disconnect(); korless.conn = nil end
+		if korless.on then
+			task.spawn(applyKorlessOnce)
+			korless.conn = LP.CharacterAdded:Connect(function()
+				task.wait(1)
+				if korless.on and not unloaded then applyKorlessOnce() end
+			end)
+		else
+			removeKorless()
+		end
+	end
+
+	local function loadAppearance(appearance, character, head)
+		local items = appearance:GetChildren()
+		local function applyMesh(obj)
+			if obj:IsA("CharacterMesh") or obj:IsA("BodyColors") or obj:IsA("Shirt") or obj:IsA("Pants") then
+				local existing = character:FindFirstChild(obj.Name)
+				if existing and existing.ClassName == obj.ClassName then existing:Destroy() end
+				obj:Clone().Parent = character
+			end
+		end
+		for _, item in pairs(items) do
+			if item:IsA("Folder") or item:IsA("Model") then
+				for _, sub in pairs(item:GetChildren()) do applyMesh(sub) end
+			else
+				applyMesh(item)
+			end
+		end
+		for _, item in pairs(items) do
+			if item:IsA("SpecialMesh") and head then
+				local tm = head:FindFirstChildOfClass("SpecialMesh") or Instance.new("SpecialMesh", head)
+				tm.MeshType = Enum.MeshType.FileMesh
+				tm.MeshId = item.MeshId
+				tm.TextureId = item.TextureId
+			elseif item:IsA("Decal") and item.Name == "face" and head then
+				if head:FindFirstChild("face") then head.face:Destroy() end
+				item:Clone().Parent = head
+			end
+		end
+		for _, item in pairs(items) do
+			if item:IsA("Accessory") then
+				local clone = item:Clone()
+				local handle = clone:FindFirstChild("Handle")
+				if handle then
+					local att = handle:FindFirstChildOfClass("Attachment")
+					if att then
+						local ta = character:FindFirstChild(att.Name, true)
+						if ta then
+							local weld = Instance.new("Weld")
+							weld.Part0 = handle
+							weld.Part1 = ta.Parent
+							weld.C0 = att.CFrame
+							weld.C1 = ta.CFrame
+							weld.Parent = handle
+						end
+					end
+					handle.CanCollide = false
+					handle.Massless = true
+					clone.Parent = character
+				end
+			end
+		end
+	end
+
+	local function legacyApply(id, character, humanoid)
+		local ok, appearance = pcall(function() return Players:GetCharacterAppearanceAsync(id) end)
+		if not ok or not appearance then return false end
+		for _, obj in pairs(character:GetChildren()) do
+			if obj:IsA("Accessory") or obj:IsA("Shirt") or obj:IsA("Pants")
+				or obj:IsA("BodyColors") or obj:IsA("CharacterMesh") or obj:IsA("ShirtGraphic") then
+				obj:Destroy()
+			end
+		end
+		local head = character:FindFirstChild("Head")
+		if head then
+			for _, h in pairs(head:GetChildren()) do
+				if h:IsA("SpecialMesh") or h:IsA("Decal") then h:Destroy() end
+			end
+			local m = Instance.new("SpecialMesh", head)
+			m.MeshType = Enum.MeshType.Head
+			m.Scale = Vector3.new(1, 1, 1)
+		end
+		local defaults = {
+			BodyDepthScale = 1, BodyHeightScale = 1, BodyWidthScale = 1,
+			HeadScale = 1, BodyTypeScale = 0, BodyProportionScale = 0,
+		}
+		for name, val in pairs(defaults) do
+			local sv = humanoid:FindFirstChild(name)
+			if sv then sv.Value = val end
+		end
+		task.wait(0.1)
+		loadAppearance(appearance, character, head)
+		pcall(function()
+			local info = Players:GetCharacterAppearanceInfoAsync(id)
+			if head and info.assets then
+				for _, asset in pairs(info.assets) do
+					if asset.assetType.name == "Face" then
+						if head:FindFirstChild("face") then head.face:Destroy() end
+						local f = Instance.new("Decal", head)
+						f.Name = "face"
+						f.Texture = "rbxassetid://" .. asset.id
+						break
+					end
+				end
+			end
+		end)
+		return true
+	end
+
+	local origDesc = nil
+
+	local ours = {}
+	local hornOn = {}
+	local hornObjs = {}
+
+	local function isKillerNow()
+		if LP.Team ~= nil and string.find(string.lower(LP.Team.Name), "killer", 1, true) ~= nil then return true end
+		local ch = LP.Character
+		return ch ~= nil and ch:GetAttribute("MorphedKiller") ~= nil
+	end
+
+	local function markOurs()
+		ours = {}
+		local ch = LP.Character
+		if not ch then return end
+		for _, c in ipairs(ch:GetChildren()) do
+			if c:IsA("Accessory") then ours[c] = true end
+		end
+	end
+
+	local function clearHorn(name)
+		local list = hornObjs[name]
+		if list then
+			for _, obj in ipairs(list) do
+				pcall(function() if obj and obj.Parent then obj:Destroy() end end)
+			end
+		end
+		hornObjs[name] = nil
+	end
+
+	local function stripForKiller()
+		for acc in pairs(ours) do
+			pcall(function() if acc.Parent then acc:Destroy() end end)
+		end
+		ours = {}
+		for name in pairs(hornObjs) do clearHorn(name) end
+	end
+
+	local HORNS = {
+		["Poisoned Horns of the Toxic Wasteland"] = { AssetId = 1744060292, MeshId = "215680403", TextureId = "1744057070" },
+		["Fiery Horns of the Netherworld"] = { AssetId = 215718515, MeshId = "215680403", TextureId = "215676264" },
+		["Frozen Horns of the Frozen Tundra"] = { AssetId = 74891470, MeshId = "215680403", TextureId = "658646189" },
+	}
+	local HORN_ORDER = {
+		"Poisoned Horns of the Toxic Wasteland",
+		"Fiery Horns of the Netherworld",
+		"Frozen Horns of the Frozen Tundra",
+	}
+
+	local function applyHorn(name)
+		clearHorn(name)
+		local data = HORNS[name]
+		local character = LP.Character
+		if not data or not character or isKillerNow() then return false end
+		local attached = {}
+
+		local function attach(source)
+			local sh = source:FindFirstChild("Handle")
+			if not sh or not sh:IsA("BasePart") then return false end
+			local clone = source:Clone()
+			local handle = clone:FindFirstChild("Handle")
+			if not handle or not handle:IsA("BasePart") then
+				pcall(function() clone:Destroy() end)
+				return false
+			end
+			clone.Name = "VD_FakeLimitedHorn"
+			handle.CanCollide = false
+			handle.CanTouch = false
+			handle.CanQuery = false
+			handle.Massless = true
+			local accAtt
+			for _, o in ipairs(handle:GetChildren()) do
+				if o:IsA("Attachment") then accAtt = o; break end
+			end
+			local targetAtt
+			if accAtt then
+				for _, o in ipairs(character:GetDescendants()) do
+					if o:IsA("Attachment") and o.Name == accAtt.Name then targetAtt = o; break end
+				end
+			end
+			clone.Parent = character
+			local head = character:FindFirstChild("Head")
+			if targetAtt and accAtt and targetAtt.Parent:IsA("BasePart") then
+				handle.CFrame = targetAtt.WorldCFrame * accAtt.CFrame:Inverse()
+			elseif head then
+				handle.CFrame = head.CFrame * CFrame.new(0, 0.65, 0)
+			else
+				pcall(function() clone:Destroy() end)
+				return false
+			end
+			local weld = Instance.new("WeldConstraint")
+			weld.Name = "VD_FakeLimitedHornWeld"
+			weld.Part0 = handle
+			weld.Part1 = (targetAtt and targetAtt.Parent:IsA("BasePart")) and targetAtt.Parent or head
+			weld.Parent = handle
+			attached[#attached + 1] = clone
+			return true
+		end
+
+		if data.AssetId then
+			local ok, loaded = pcall(function() return game:GetObjects("rbxassetid://" .. tostring(data.AssetId)) end)
+			if ok and type(loaded) == "table" then
+				for _, root in ipairs(loaded) do
+					local list = {}
+					if root:IsA("Accessory") then
+						list[1] = root
+					else
+						for _, o in ipairs(root:GetDescendants()) do
+							if o:IsA("Accessory") then list[#list + 1] = o end
+						end
+					end
+					for _, acc in ipairs(list) do attach(acc) end
+					pcall(function() root:Destroy() end)
+				end
+			end
+		end
+
+		if #attached == 0 and data.MeshId and data.TextureId then
+			local head = character:FindFirstChild("Head")
+			if head then
+				local acc = Instance.new("Accessory")
+				acc.Name = "VD_FakeLimitedHorn"
+				local handle = Instance.new("Part")
+				handle.Name = "Handle"
+				handle.Size = Vector3.new(1, 1, 1)
+				handle.Transparency = 1
+				handle.CanCollide = false
+				handle.CanTouch = false
+				handle.CanQuery = false
+				handle.Massless = true
+				handle.CastShadow = false
+				handle.Parent = acc
+				local mesh = Instance.new("SpecialMesh")
+				mesh.MeshType = Enum.MeshType.FileMesh
+				mesh.MeshId = "rbxassetid://" .. data.MeshId
+				mesh.TextureId = "rbxassetid://" .. data.TextureId
+				mesh.Parent = handle
+				acc.Parent = character
+				handle.CFrame = head.CFrame * CFrame.new(0, 0.65, 0)
+				local weld = Instance.new("WeldConstraint")
+				weld.Name = "VD_FakeLimitedHornWeld"
+				weld.Part0 = handle
+				weld.Part1 = head
+				weld.Parent = handle
+				attached[#attached + 1] = acc
+			end
+		end
+
+		if #attached == 0 then return false end
+		hornObjs[name] = attached
+		return true
+	end
+
+	local function setHorn(name, on)
+		if on then
+			for other, enabled in pairs(hornOn) do
+				if enabled and other ~= name then
+					hornOn[other] = false
+					clearHorn(other)
+				end
+			end
+			if isKillerNow() then
+				hornOn[name] = false
+				say("Not available as Killer")
+				return
+			end
+			hornOn[name] = applyHorn(name)
+			say(hornOn[name] and "Horn applied" or "Horn failed")
+		else
+			hornOn[name] = false
+			clearHorn(name)
+		end
+	end
+
+	local function descApply(id, humanoid, override)
+		local desc = override
+		if not desc then
+			local ok, d = pcall(function() return Players:GetHumanoidDescriptionFromUserId(id) end)
+			if not ok or not d then return false end
+			desc = d
+		end
+		local applied = pcall(function() humanoid:ApplyDescriptionReset(desc) end)
+		if not applied then applied = pcall(function() humanoid:ApplyDescription(desc) end) end
+		if not applied then return false end
+		task.wait(0.4)
+		local okA, cur = pcall(function() return humanoid:GetAppliedDescription() end)
+		if not okA or not cur then return false end
+		return cur.Shirt == desc.Shirt and cur.Pants == desc.Pants and cur.Face == desc.Face
+	end
+
+	local function applyAvatar(id)
+		local character = LP.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if not humanoid then
+			say("No character")
+			return
+		end
+		if isKillerNow() then
+			say("Not available as Killer")
+			return
+		end
+		if not origDesc then
+			local okO, d = pcall(function() return humanoid:GetAppliedDescription() end)
+			if okO and d then origDesc = d end
+		end
+		lastId = id
+		local done
+		if id == LP.UserId and origDesc then
+			done = descApply(id, humanoid, origDesc)
+		else
+			done = descApply(id, humanoid)
+			if not done then done = legacyApply(id, character, humanoid) end
+		end
+		if done then markOurs() end
+		if korless.on then
+			task.wait(0.1)
+			applyKorlessOnce()
+		end
+		say(done and "Applied" or "Failed")
+	end
+
+	local function resolveId()
+		if source == "user" then
+			if usernameInput == "" then return nil, "Enter a username or ID" end
+			local n = tonumber(usernameInput)
+			if n then return n end
+			local ok, id = pcall(function() return Players:GetUserIdFromNameAsync(usernameInput) end)
+			if not ok or not id then return nil, "User not found" end
+			return id
+		end
+		return selectedId
+	end
+
+	card = addCard(14, "user", "Avatar Visual", "ON keeps avatar after respawn", "AvatarVisual", function(on)
+		AV.Enabled = on == true
+		if AV.Enabled and lastId then task.spawn(applyAvatar, lastId) end
+	end)
+
+	local serverList = {}
+	local function refreshServerList()
+		for i = #serverList, 1, -1 do serverList[i] = nil end
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= LP then serverList[#serverList + 1] = p.Name end
+		end
+		table.sort(serverList)
+		if #serverList == 0 then serverList[1] = "No players" end
+	end
+	refreshServerList()
+	Players.PlayerAdded:Connect(function() task.delay(1, refreshServerList) end)
+	Players.PlayerRemoving:Connect(function() task.delay(1, refreshServerList) end)
+
+	addDropdown(card, "Server Players", "users", serverList,
+		function(v) return v or "Select" end,
+		function() return selectedServer end,
+		function(v)
+			selectedServer = v
+			local plr = Players:FindFirstChild(v)
+			if plr and plr.UserId then
+				selectedId = plr.UserId
+				source = "server"
+			end
+		end)
+
+	local PRESET_IDS = {
+		["Self Avatar"] = LP.UserId,
+		["Random 1"] = 2888298851, ["Random 2"] = 10074747755,
+		["Random 3"] = 5209567453, ["Random 4"] = 8991982843,
+		["Random 5"] = 5796319029, ["Random 6"] = 9744452117,
+		["Random 7"] = 8476755006,
+		["WoozyNate"] = 146089324, ["Nicholas"] = 909635,
+		["yvlyf"] = 181751703, ["traevp"] = 471607078,
+		["J0LLY"] = 1073847038, ["LucashDev"] = 2525651744,
+		["CEOofIsaac"] = 63238912, ["Stealthy"] = 56602747,
+		["Wildes"] = 40397833, ["Talon"] = 75974130,
+		["Relukt"] = 65042011, ["Sammy"] = 2678001507,
+		["Diesel"] = 9123921576, ["S4ans03"] = 35439794,
+		["Aura"] = 2275806428, ["iJava"] = 276557820,
+		["White Guy"] = 8843268357, ["Purple King"] = 9070758608,
+		["Kachaaaa Gay"] = 8956318334, ["Mpruyyy"] = 8340163775,
+	}
+	local PRESET_ORDER = {
+		"Self Avatar", "Random 1", "Random 2", "Random 3", "Random 4", "Random 5", "Random 6", "Random 7",
+		"WoozyNate", "Nicholas", "yvlyf", "traevp", "J0LLY", "LucashDev", "CEOofIsaac", "Stealthy",
+		"Wildes", "Talon", "Relukt", "Sammy", "Diesel", "S4ans03", "Aura", "iJava", "White Guy",
+		"Purple King", "Kachaaaa Gay", "Mpruyyy",
+	}
+	addDropdown(card, "Preset Avatars", "layers", PRESET_ORDER,
+		function(v) return v end,
+		function() return presetName end,
+		function(v)
+			presetName = v
+			selectedId = PRESET_IDS[v] or LP.UserId
+			source = "preset"
+		end)
+
+	local ctrl = addOption(card, "Username / ID", "user")
+	local box = new("TextBox", {
+		Size = UDim2.fromOffset(130, 26),
+		BackgroundColor3 = C.Surface,
+		Text = "",
+		PlaceholderText = "username or user id",
+		PlaceholderColor3 = C.Muted,
+		TextColor3 = C.Text,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+		ClearTextOnFocus = false,
+		LayoutOrder = 1,
+	}, ctrl)
+	corner(box, 6)
+	box:GetPropertyChangedSignal("Text"):Connect(function()
+		usernameInput = (box.Text or ""):gsub("^@", ""):gsub("%s+", "")
+		if usernameInput ~= "" then source = "user" end
+	end)
+
+	local _, applyBtn = addOption(card, "Apply Avatar", "check", true)
+	applyBtn.MouseButton1Click:Connect(function()
+		if busy then return end
+		busy = true
+		task.spawn(function()
+			say("Loading")
+			local id, err = resolveId()
+			if id then applyAvatar(id) else say(err or "Failed") end
+			busy = false
+		end)
+	end)
+
+	addCheckbox(card, "Korless Morph", "skull",
+		function() return korless.on end,
+		function(v) setKorless(v) end)
+
+	for _, hornName in ipairs(HORN_ORDER) do
+		addCheckbox(card, hornName, "crown",
+			function() return hornOn[hornName] == true end,
+			function(v) setHorn(hornName, v) end)
+	end
+
+	task.spawn(function()
+		while not unloaded do
+			task.wait(0.5)
+			if isKillerNow() and (next(ours) ~= nil or next(hornObjs) ~= nil) then
+				pcall(stripForKiller)
+			end
+		end
+	end)
+
+	LP.CharacterAdded:Connect(function()
+		task.wait(2.5)
+		if unloaded then return end
+		if isKillerNow() then return end
+		if AV.Enabled and lastId then applyAvatar(lastId) end
+		if korless.on then applyKorlessOnce() end
+		for name, enabled in pairs(hornOn) do
+			if enabled then applyHorn(name) end
+		end
+	end)
+end
+
+do
+	local s = State.AutoPumpkin
+	local farm = State.PumpkinFarmObj
+	local card = addCard(7, "tractor", "Auto Farm Pumpkins", "Crush pumpkins automatically", "AutoPumpkin")
+	local ctrl = addOption(card, "Status", "activity")
+	local st = pill(ctrl, farm.Status, 160, 1, false)
+	st.TextSize = 11
+	farm.OnStatus = function(t) st.Text = t end
+	addCheckbox(card, "Auto Run (while farming)", "footprints", function() return s.AutoRun end, function(v) s.AutoRun = v end)
+	addCheckbox(card, "Flee Killer", "siren", function() return s.FleeKiller end, function(v) s.FleeKiller = v end)
+	addSlider(card, "Flee Distance", "ruler", 5, 60,
+		function() return math.clamp(math.floor(tonumber(s.FleeDistance) or 25), 5, 60) end,
+		function(v) s.FleeDistance = v end)
+end
+
+do
+	local s = State.WorldSettings
+	local perf = State.PerfObj
+	local card = addCard(8, "sun", "World Settings", "Turn ON, then tick options", "WorldSettings")
+	local function opt(label, icn, field)
+		addCheckbox(card, label, icn, function() return s[field] end, function(v) perf:Set(field, v) end)
+	end
+	opt("Full Bright", "sun", "FullBright")
+	addSlider(card, "Brightness", "sun-medium", 1, 6,
+		function() return math.clamp(math.floor((tonumber(s.FullBrightValue) or 3) + 0.5), 1, 6) end,
+		function(v) perf:Set("FullBrightValue", v) end)
+	opt("Custom Time", "clock", "CustomTime")
+	addSlider(card, "Time of Day", "clock", 0, 24,
+		function() return math.clamp(math.floor(tonumber(s.TimeOfDay) or 14), 0, 24) end,
+		function(v) perf:Set("TimeOfDay", v) end)
+	opt("No Fog",        "cloud-off",  "NoFog")
+	opt("No Shadow",     "moon",       "NoShadow")
+	opt("Low Graphics",    "gauge",      "LowGFX")
+	opt("Low: Textures", "image-off",  "LowGFX_Textures")
+	opt("Low: Particles","sparkles",   "LowGFX_Particles")
+	opt("Low: Effects",  "wand",       "LowGFX_VFX")
+	opt("Low: Materials","box",        "LowGFX_Parts")
+	opt("Low: Hide Sky", "cloud",      "LowGFX_Sky")
+	opt("Remove Trees",  "tree-pine",  "RemoveTree")
+	opt("Remove Grass",  "sprout",     "RemoveGrass")
+end
+
+State.HighCamera = { Enabled = false, Distance = 25, FOV = 120, Height = 10 }
+State.HighCamObj = (function()
+	local H = State.HighCamera
+	local obj = {}
+	local active = false
+	local def = { fov = 70, minZ = 0.5, maxZ = 128 }
+	local BIND = "VDHighCamera"
+
+	local function apply()
+		if unloaded then return end
+		local c = workspace.CurrentCamera
+		if not c then return end
+		c.FieldOfView = H.FOV
+		local d = H.Distance
+		LP.CameraMaxZoomDistance = d + 0.5
+		LP.CameraMinZoomDistance = math.max(0.1, d - 0.5)
+		c.CFrame = c.CFrame + Vector3.new(0, H.Height, 0)
+	end
+
+	function obj:Refresh()
+		local want = H.Enabled and State.CameraSettings.Enabled == true and not unloaded
+		if want == active then return end
+		active = want
+		if want then
+			local c = workspace.CurrentCamera
+			if c then def.fov = c.FieldOfView end
+			def.minZ = LP.CameraMinZoomDistance
+			def.maxZ = LP.CameraMaxZoomDistance
+			RunService:BindToRenderStep(BIND, Enum.RenderPriority.Camera.Value + 1, apply)
+		else
+			pcall(function() RunService:UnbindFromRenderStep(BIND) end)
+			local c = workspace.CurrentCamera
+			if c then c.FieldOfView = def.fov end
+			LP.CameraMaxZoomDistance = def.maxZ
+			LP.CameraMinZoomDistance = def.minZ
+		end
+	end
+
+	function obj:SetEnabled(on)
+		H.Enabled = on == true
+		obj:Refresh()
+	end
+
+	return obj
+end)()
+
+do
+	local s = State.CameraSettings
+	local cam = State.CameraObj
+	local card = addCard(9, "camera", "Camera Settings", "Turn ON, then tick options", "CameraSettings")
+	addCheckbox(card, "Unlimited Zoom", "scan",
+		function() return s.ZoomOn end,
+		function(v) s.ZoomOn = v; cam:Sync() end)
+	addSlider(card, "Max Zoom", "ruler", 50, 2000,
+		function() return math.clamp(math.floor(tonumber(s.Zoom) or 1000), 50, 2000) end,
+		function(v) s.Zoom = v; cam:Sync() end)
+	addCheckbox(card, "Custom FOV", "eye",
+		function() return s.FOVOn end,
+		function(v) s.FOVOn = v; cam:Sync() end)
+	addSlider(card, "FOV", "scan", 30, 120,
+		function() return math.clamp(math.floor(tonumber(s.FOV) or 70), 30, 120) end,
+		function(v) s.FOV = v; cam:Sync() end)
+	addCheckbox(card, "Camera Stiffness", "gauge",
+		function() return s.StiffOn end,
+		function(v) s.StiffOn = v; cam:Sync() end)
+	addSlider(card, "Stiffness", "gauge", 1, 10,
+		function() return math.clamp(math.floor(tonumber(s.Stiff) or 3), 1, 10) end,
+		function(v) s.Stiff = v end)
+	addCheckbox(card, "Stretch", "arrow-down",
+		function() return s.StretchOn end,
+		function(v) s.StretchOn = v; cam:Sync() end)
+	addSlider(card, "Stretch Level", "arrow-down", 1, 10,
+		function() return math.clamp(math.floor(tonumber(s.Stretch) or 5), 1, 10) end,
+		function(v) s.Stretch = v end)
+
+	local hs = State.HighCamera
+	local hc = State.HighCamObj
+	addCheckbox(card, "High Camera", "camera",
+		function() return hs.Enabled end,
+		function(v) hc:SetEnabled(v) end)
+	addSlider(card, "High Camera Distance", "ruler", 1, 60,
+		function() return math.clamp(math.floor(tonumber(hs.Distance) or 25), 1, 60) end,
+		function(v) hs.Distance = v end)
+	addSlider(card, "High Camera FOV", "scan", 50, 120,
+		function() return math.clamp(math.floor(tonumber(hs.FOV) or 120), 50, 120) end,
+		function(v) hs.FOV = v end)
+	addSlider(card, "High Camera Height", "arrow-up", -10, 40,
+		function() return math.clamp(math.floor(tonumber(hs.Height) or 10), -10, 40) end,
+		function(v) hs.Height = v end)
+end
+
+do
+	local HttpService = game:GetService("HttpService")
+	local DIR = "KinonHubBeta"
+	local SLOT_DIR = DIR .. "/slots"
+	local AUTO = DIR .. "/autoload.txt"
+	local hasFs = type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function"
+	local hasDel = type(delfile) == "function"
+
+	State.KinonSettings = { Enabled = false, AutoLoad = false }
+	local ss = State.KinonSettings
+
+	Reg.skip = true
+	local card = addCard(16, "save", "Settings", "Save, load and delete your config slots", "KinonSettings")
+	card.toggle.Visible = false
+
+	local function say(text) pcall(function() card.sub.Text = text end) end
+
+	local function encode(v)
+		if typeof(v) == "Color3" then
+			return { c = { math.floor(v.R * 255 + 0.5), math.floor(v.G * 255 + 0.5), math.floor(v.B * 255 + 0.5) } }
+		end
+		return v
+	end
+	local function decode(v, like)
+		if typeof(like) == "Color3" then
+			if type(v) == "table" and type(v.c) == "table" then
+				local r, g, b = tonumber(v.c[1]), tonumber(v.c[2]), tonumber(v.c[3])
+				if r and g and b then
+					return Color3.fromRGB(math.clamp(r, 0, 255), math.clamp(g, 0, 255), math.clamp(b, 0, 255))
+				end
+			end
+			return nil
+		end
+		if type(v) ~= type(like) then return nil end
+		return v
+	end
+
+	local function apply(entry, value)
+		if value == nil then return false end
+		if type(value) == "number" and entry.lo and entry.hi then
+			value = math.clamp(value, entry.lo, entry.hi)
+		end
+		local ok = pcall(entry.set, value)
+		if ok and entry.refresh then pcall(entry.refresh) end
+		return ok
+	end
+
+	local function applyAll(getValue)
+		local count = 0
+		for pass = 1, 2 do
+			for _, e in ipairs(Reg.list) do
+				if (pass == 2) == (e.enabled == true) then
+					local v = getValue(e)
+					if v ~= nil and apply(e, v) then count = count + 1 end
+				end
+			end
+		end
+		return count
+	end
+
+	local function reset()
+		local n = applyAll(function(e) return e.default end)
+		say("Reset " .. n .. " values to default")
+	end
+
+	local slotName = "My Config"
+	local slotChoices = {}
+	local slotSaved = {}
+	local slotInput
+	local dropdownRender
+
+	local function cleanSlotName(name)
+		name = tostring(name or ""):gsub("^%s+", ""):gsub("%s+$", "")
+		name = name:gsub('[%c/\\:*?"<>|]', "_"):sub(1, 40)
+		return name
+	end
+	local function slotFile(name)
+		return SLOT_DIR .. "/" .. name .. ".json"
+	end
+	local function ensureSlotFolder()
+		if type(isfolder) == "function" and type(makefolder) == "function" then
+			if not isfolder(DIR) then makefolder(DIR) end
+			if not isfolder(SLOT_DIR) then makefolder(SLOT_DIR) end
+		end
+	end
+
+	local refreshSlotChoices
+	refreshSlotChoices = function(preferred)
+		local found = {}
+		if hasFs and type(listfiles) == "function" then
+			pcall(function()
+				ensureSlotFolder()
+				for _, path in ipairs(listfiles(SLOT_DIR)) do
+					local name = tostring(path):match("([^/\\]+)%.json$")
+					if name and name ~= "" then
+						local okFile, exists = pcall(isfile, slotFile(name))
+						if okFile and exists then found[name] = true end
+					end
+				end
+			end)
+		end
+		table.clear(slotChoices)
+		table.clear(slotSaved)
+		for name in pairs(found) do table.insert(slotChoices, name); slotSaved[name] = true end
+		table.sort(slotChoices, function(a, b) return a:lower() < b:lower() end)
+		if preferred and found[preferred] then slotName = preferred end
+		if slotInput then slotInput.Text = slotName end
+		if dropdownRender then pcall(dropdownRender) end
+	end
+
+	local function saveSlot()
+		if not hasFs then say("Save failed: executor has no file access"); return end
+		local name = cleanSlotName(slotName)
+		if name == "" then say("Enter a slot name first"); return end
+		local data = {}
+		for _, e in ipairs(Reg.list) do
+			local ok, v = pcall(e.get)
+			if ok and v ~= nil then data[e.id] = encode(v) end
+		end
+		local ok, err = pcall(function()
+			ensureSlotFolder()
+			writefile(slotFile(name), HttpService:JSONEncode(data))
+		end)
+		if ok then
+			slotName = name
+			refreshSlotChoices(name)
+			say("Saved slot: " .. name)
+		else say("Slot save failed: " .. tostring(err):sub(1, 40)) end
+	end
+
+	local function loadSlot(silent)
+		local name = cleanSlotName(slotName)
+		if name == "" then if not silent then say("Enter a slot name first") end; return end
+		local file = slotFile(name)
+		local okFile, exists = pcall(isfile, file)
+		if not okFile or not exists then if not silent then say("Slot not found: " .. name) end; return end
+		local okRead, raw = pcall(readfile, file)
+		local okJson, data = false, nil
+		if okRead then okJson, data = pcall(function() return HttpService:JSONDecode(raw) end) end
+		if not okJson or type(data) ~= "table" then say("Slot is corrupt: " .. name); return end
+		local n = applyAll(function(e) return decode(data[e.id], e.default) end)
+		say("Loaded slot: " .. name .. " (" .. n .. " values)")
+	end
+
+	local function deleteSlot()
+		if not hasFs then say("Delete failed: executor has no file access"); return end
+		if not hasDel then say("Delete failed: executor has no delfile"); return end
+		local name = cleanSlotName(slotName)
+		if name == "" then say("Enter a slot name first"); return end
+		local file = slotFile(name)
+		local okFile, exists = pcall(isfile, file)
+		if not okFile or not exists then say("Slot not found: " .. name); return end
+		local ok, err = pcall(delfile, file)
+		if not ok then say("Delete failed: " .. tostring(err):sub(1, 40)); return end
+
+		refreshSlotChoices()
+		local nextName = slotChoices[1]
+		if nextName then
+			slotName = nextName
+			if slotInput then slotInput.Text = nextName end
+		elseif slotInput then
+			slotInput.Text = slotName
+		end
+
+		local okAuto, autoName = pcall(readfile, AUTO)
+		if ss.AutoLoad and okAuto and cleanSlotName(autoName) == name then
+			pcall(delfile, AUTO)
+			ss.AutoLoad = false
+		end
+		say("Deleted slot: " .. name)
+	end
+
+	local function actionRow(label, iconName, btnText, fn)
+		local ctrl, rowBtn = addOption(card, label, iconName)
+		local b = pill(ctrl, btnText, 64, 1, true)
+		stylePill(b, true)
+		b.MouseButton1Click:Connect(fn)
+		rowBtn.MouseButton1Click:Connect(fn)
+	end
+
+	do
+		local ctrl = addOption(card, "Name Config", "edit")
+		local box = Instance.new("TextBox")
+		slotInput = box
+		box.Name = "SlotNameInput"
+		box.Size = UDim2.new(0, 132, 0, 28)
+		box.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+		box.BorderSizePixel = 0
+		box.Text = slotName
+		box.PlaceholderText = "Enter slot name"
+		box.ClearTextOnFocus = false
+		box.TextColor3 = Color3.fromRGB(245, 245, 250)
+		box.PlaceholderColor3 = Color3.fromRGB(145, 145, 155)
+		box.Font = Enum.Font.Gotham
+		box.TextSize = 11
+		box.Parent = ctrl
+		corner(box, 7)
+		box.FocusLost:Connect(function()
+			slotName = cleanSlotName(box.Text)
+			box.Text = slotName
+			if dropdownRender then pcall(dropdownRender) end
+		end)
+	end
+
+	refreshSlotChoices()
+	addDropdown(card, "List Config", "list", slotChoices,
+		function(v) return v or "No saved slots" end,
+		function() return slotSaved[slotName] and slotName or nil end,
+		function(v)
+			slotName = v
+			if slotInput then slotInput.Text = v end
+		end)
+	dropdownRender = RegHook.r
+	RegHook.r = nil
+	actionRow("Save Config", "save", "Save", saveSlot)
+	actionRow("Load Config", "download", "Load", function() loadSlot(false) end)
+	actionRow("Delete Config", "trash-2", "Delete", deleteSlot)
+	actionRow("Reset to Default", "rotate-ccw", "Reset", reset)
+
+	do
+		local flag = false
+		if hasFs then
+			local ok, autoName = pcall(readfile, AUTO)
+			flag = ok and cleanSlotName(autoName) ~= ""
+		end
+		ss.AutoLoad = flag
+		addCheckbox(card, "Auto Load Config", "zap",
+			function() return ss.AutoLoad end,
+			function(v)
+				ss.AutoLoad = v
+				if not hasFs then return end
+				pcall(function()
+					if v then
+						ensureSlotFolder()
+						writefile(AUTO, cleanSlotName(slotName))
+					elseif hasDel and isfile(AUTO) then
+						delfile(AUTO)
+					end
+				end)
+			end)
+	end
+	Reg.skip = false
+
+	State.SaveSettings = saveSlot
+	State.LoadSettings = loadSlot
+
+	if ss.AutoLoad then
+		task.defer(function()
+			task.wait(1)
+			if unloaded then return end
+			local okAuto, autoName = pcall(readfile, AUTO)
+			autoName = okAuto and cleanSlotName(autoName) or ""
+			if autoName ~= "" then
+				slotName = autoName
+				if slotInput then slotInput.Text = autoName end
+				loadSlot(true)
+			end
+		end)
+	end
+end
+
+State.FakeParry = { Enabled = false, Anim = "Enten" }
+do
+	local FPY = State.FakeParry
+	local ParryFloatOn = false
+	local FAKE_ANIMS = {
+		["Enten"]               = "rbxassetid://127096285501517",
+		["Stopwatch"]           = "rbxassetid://81793464499285",
+		["Fih"]                 = "rbxassetid://123307242865945",
+		["Blood Shield"]        = "rbxassetid://75939529748815",
+		["Frying Pan"]          = "rbxassetid://74655471921270",
+		["Vampire Lord Scythe"] = "rbxassetid://117821101412772",
+		["Diamond Sword"]       = "rbxassetid://85288374151888",
+	}
+	local FAKE_ORDER = { "Enten", "Stopwatch", "Fih", "Blood Shield", "Frying Pan", "Vampire Lord Scythe", "Diamond Sword" }
+	local currentTrack, floatGui
+
+	local function playFakeParry()
+		pcall(function()
+			local char = LP.Character
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			if not hum then return end
+			local animator = hum:FindFirstChildOfClass("Animator")
+			if not animator then
+				animator = Instance.new("Animator")
+				animator.Parent = hum
+			end
+			if currentTrack then pcall(function() currentTrack:Stop() end); currentTrack = nil end
+			local anim = Instance.new("Animation")
+			anim.AnimationId = FAKE_ANIMS[FPY.Anim] or FAKE_ANIMS["Enten"]
+			local tr = animator:LoadAnimation(anim)
+			tr.Priority = Enum.AnimationPriority.Action
+			tr:Play()
+			currentTrack = tr
+		end)
+	end
+
+	track(UserInputService.InputBegan:Connect(function(input, gp)
+		if gp or unloaded or not FPY.Enabled then return end
+		if input.KeyCode == Enum.KeyCode.V then playFakeParry() end
+	end))
+
+	local function buildFloat()
+		local gui = Instance.new("ScreenGui")
+		gui.Name = "KINON_FakeParryShortcut"
+		gui.ResetOnSpawn = false
+		gui.IgnoreGuiInset = true
+		gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+		gui.Parent = parent
+
+		local frame = Instance.new("Frame")
+		frame.Size = UDim2.fromOffset(142, 38)
+		frame.Position = UDim2.new(1, -138, 0.53, 0)
+		frame.BackgroundColor3 = WHITE
+		frame.BackgroundTransparency = 0.02
+		frame.Active = true
+		frame.BorderSizePixel = 0
+		frame.ZIndex = 150
+		frame.Parent = gui
+		Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 9)
+		local st = Instance.new("UIStroke")
+		st.Color = Color3.fromRGB(90, 90, 90)
+		st.Thickness = 1
+		st.Transparency = 0.12
+		st.Parent = frame
+		local grad = Instance.new("UIGradient")
+		grad.Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(34, 34, 34)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(8, 8, 8)),
+		})
+		grad.Rotation = 90
+		grad.Parent = frame
+
+		local btn = Instance.new("TextButton")
+		btn.Size = UDim2.fromScale(1, 1)
+		btn.BackgroundTransparency = 1
+		btn.Text = ""
+		btn.AutoButtonColor = false
+		btn.ZIndex = 151
+		btn.Parent = frame
+		local title = Instance.new("TextLabel")
+		title.BackgroundTransparency = 1
+		title.Position = UDim2.fromOffset(9, 0)
+		title.Size = UDim2.new(1, -18, 1, 0)
+		title.Font = Enum.Font.GothamBold
+		title.Text = "FAKE PARRY"
+		title.TextSize = 10
+		title.TextXAlignment = Enum.TextXAlignment.Left
+		title.TextTruncate = Enum.TextTruncate.AtEnd
+		title.TextColor3 = C.Text
+		title.ZIndex = 152
+		title.Parent = btn
+
+		task.defer(function()
+			if not frame.Parent then return end
+			local camera = workspace.CurrentCamera
+			local viewport = camera and camera.ViewportSize or Vector2.new(800, 600)
+			local width = math.clamp(math.ceil(title.TextBounds.X) + 26, 116, 166)
+			frame.Size = UDim2.fromOffset(width, 38)
+			local pos = frame.Position
+			local px = pos.X.Scale * viewport.X + pos.X.Offset
+			local py = pos.Y.Scale * viewport.Y + pos.Y.Offset
+			frame.Position = UDim2.fromOffset(
+				math.clamp(px, 0, math.max(0, viewport.X - frame.AbsoluteSize.X)),
+				math.clamp(py, 0, math.max(0, viewport.Y - frame.AbsoluteSize.Y))
+			)
+		end)
+
+		local pressed, moved, active, startPtr, startAbs = false, false, nil, nil, nil
+		local floatConns = {}
+		local function keepFloatConn(conn)
+			floatConns[#floatConns + 1] = conn
+			return conn
+		end
+		btn.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				pressed, moved, active = true, false, input
+				startPtr, startAbs = input.Position, frame.AbsolutePosition
+			end
+		end)
+		local function moveButton(input)
+			if not pressed or not startPtr then return end
+			if input == active or input.UserInputType == Enum.UserInputType.MouseMovement then
+				local d = input.Position - startPtr
+				if d.Magnitude > 6 then moved = true end
+				if moved then
+					local cam = workspace.CurrentCamera
+					local vp = cam and cam.ViewportSize or Vector2.new(800, 600)
+					frame.Position = UDim2.fromOffset(
+						math.clamp(startAbs.X + d.X, 0, math.max(0, vp.X - frame.AbsoluteSize.X)),
+						math.clamp(startAbs.Y + d.Y, 0, math.max(0, vp.Y - frame.AbsoluteSize.Y)))
+				end
+			end
+		end
+		keepFloatConn(UserInputService.InputChanged:Connect(moveButton))
+		keepFloatConn(UserInputService.TouchMoved:Connect(moveButton))
+		keepFloatConn(UserInputService.InputEnded:Connect(function(input)
+			if not pressed then return end
+			if input == active or input.UserInputType == Enum.UserInputType.MouseButton1 then
+				if not moved then playFakeParry() end
+				pressed, moved, active = false, false, nil
+			end
+		end))
+		gui.Destroying:Connect(function()
+			for _, conn in ipairs(floatConns) do pcall(function() conn:Disconnect() end) end
+			table.clear(floatConns)
+		end)
+		return gui
+	end
+	local function setFloat(on)
+		ParryFloatOn = on
+		if floatGui then pcall(function() floatGui:Destroy() end); floatGui = nil end
+		if on and not unloaded then floatGui = buildFloat() end
+	end
+
+	local card = addCard(5, "shield", "Fake Parry", "Animasi: " .. FPY.Anim .. "  \226\128\162  Tombol V", "FakeParry")
+	addCheckbox(card, "Floating Button Parry", "mouse-pointer-click",
+		function() return ParryFloatOn end,
+		function(v) setFloat(v) end)
+	card.sub.TextTruncate = Enum.TextTruncate.AtEnd
+	addDropdown(card, "Animation", "list", FAKE_ORDER,
+		function(v) return v end,
+		function() return FPY.Anim end,
+		function(v)
+			FPY.Anim = v
+			card.sub.Text = "Animasi: " .. v .. "  \226\128\162  Tombol V"
+		end, 144)
+
+	local mine = Body:FindFirstChild("Fake Parry")
+	if mine then
+		for _, child in ipairs(Body:GetChildren()) do
+			if child ~= mine and child:IsA("GuiObject") and child.LayoutOrder >= 5 then
+				child.LayoutOrder = child.LayoutOrder + 1
+			end
+		end
+	end
+
+	State.FakeParryObj = { Destroy = function()
+		FPY.Enabled = false
+		if currentTrack then pcall(function() currentTrack:Stop() end) end
+		if floatGui then pcall(function() floatGui:Destroy() end); floatGui = nil end
+	end }
+end
+
+local Notch = new("TextButton", {
+	Name = "Notch",
+	AnchorPoint = Vector2.new(0.5, 0),
+	Position = UDim2.new(0.5, 0, 0, NOTCH_Y),
+	Size = UDim2.fromOffset(NOTCH_W, NOTCH_H),
+	BackgroundColor3 = WHITE,
+	Text = "",
+	AutoButtonColor = false,
+	Visible = false,
+}, Gui)
+corner(Notch, math.floor(NOTCH_H / 2))
+new("UIGradient", {
+	Color = ColorSequence.new(Color3.fromRGB(34, 34, 34), Color3.fromRGB(0, 0, 0)),
+	Rotation = 90,
+}, Notch)
+local notchStroke = new("UIStroke", { Color = WHITE, Transparency = 0.55, Thickness = 1 }, Notch)
+new("UIGradient", {
+	Color = ColorSequence.new(WHITE, Color3.fromRGB(70, 70, 70)),
+	Rotation = 90,
+}, notchStroke)
+
+local notchDot = new("Frame", {
+	AnchorPoint = Vector2.new(0, 0.5),
+	Position = UDim2.new(0, 16, 0.5, 0),
+	Size = UDim2.fromOffset(9, 9),
+	BackgroundColor3 = WHITE,
+}, Notch)
+corner(notchDot, 5)
+TweenService:Create(notchDot, TweenInfo.new(1, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {
+	BackgroundTransparency = 0.75,
+}):Play()
+
+new("TextLabel", {
+	Position = UDim2.new(0, 34, 0, 0),
+	Size = UDim2.new(1, -80, 1, 0),
+	BackgroundTransparency = 1,
+	Text = HUB_NAME,
+	TextColor3 = C.Text,
+	Font = Enum.Font.GothamBold,
+	TextSize = 13,
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, Notch)
+
+local chev = new("Frame", {
+	AnchorPoint = Vector2.new(1, 0.5),
+	Position = UDim2.new(1, -6, 0.5, 0),
+	Size = UDim2.fromOffset(26, 26),
+	BackgroundColor3 = C.Surface,
+}, Notch)
+corner(chev, 13)
+icon("chevron-down", 14, C.Text, chev)
+
+local notchCenter = UDim2.new(0.5, 0, 0, NOTCH_Y + NOTCH_H / 2)
+
+local function minimize()
+	if busy or minimized then return end
+	busy, minimized = true, true
+	savedPos = Main.Position
+
+	local t = TweenService:Create(Main, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.In), {
+		Size = UDim2.fromOffset(NOTCH_W, NOTCH_H),
+		Position = notchCenter,
+		GroupTransparency = 1,
+	})
+	t.Completed:Connect(function()
+		Main.Visible = false
+		Notch.Size = UDim2.fromOffset(NOTCH_W * 0.6, NOTCH_H * 0.6)
+		Notch.Visible = true
+		TweenService:Create(Notch, TweenInfo.new(0.24, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+			Size = UDim2.fromOffset(NOTCH_W, NOTCH_H),
+		}):Play()
+		busy = false
+	end)
+	t:Play()
+end
+
+local function restore()
+	if busy or not minimized then return end
+	busy, minimized = true, false
+
+	Notch.Visible = false
+	Main.Size = UDim2.fromOffset(NOTCH_W, NOTCH_H)
+	Main.Position = notchCenter
+	Main.GroupTransparency = 1
+	Main.Visible = true
+
+	local t = TweenService:Create(Main, TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), {
+		Size = UDim2.fromOffset(WIDTH, fullHeight()),
+		Position = savedPos or UDim2.fromScale(0.5, 0.5),
+		GroupTransparency = 0,
+	})
+	t.Completed:Connect(function() busy = false end)
+	t:Play()
+end
+
+State.Actions.minimize = minimize
+Notch.MouseButton1Click:Connect(restore)
+
+local dragging, dragStart, startPos
+Header.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+		dragging  = true
+		dragStart = input.Position
+		startPos  = Main.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then dragging = false end
+		end)
+	end
+end)
+
+track(UserInputService.InputChanged:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+		or input.UserInputType == Enum.UserInputType.Touch) then
+		local d = (input.Position - dragStart) / Scale.Scale
+		Main.Position = UDim2.new(
+			startPos.X.Scale, startPos.X.Offset + d.X,
+			startPos.Y.Scale, startPos.Y.Offset + d.Y
+		)
+	end
+end))
+
+local function unload()
+	if unloaded then return end
+	unloaded = true
+	Parry.Enabled = false
+	pcall(function() State.PlayerESPObj:Stop() end)
+	pcall(function() State.WorldESPObj:Stop() end)
+	pcall(function() State.PumpkinFarmObj:Shutdown() end)
+	pcall(function() State.PerfObj:Stop() end)
+	pcall(function() State.CameraObj:Destroy() end)
+	pcall(function() State.TOFObj:Destroy() end)
+	pcall(function() State.SilentObj:Destroy() end)
+	pcall(function() State.DestroyMarks() end)
+	pcall(function() State.HitAreaObj:Destroy() end)
+	pcall(function() State.FlashObj:Destroy() end)
+	pcall(function() State.NoSlow.K = false; State.NoSlow.S = false end)
+	pcall(function()
+		for _, handler in pairs(State.UtilityHandlers) do handler(false) end
+	end)
+	pcall(function() State.SkillCheckObj:Stop() end)
+	pcall(function() State.TrapSkillSet(false) end)
+	pcall(function() State.HighCamObj:SetEnabled(false) end)
+	pcall(function() State.SpearObj.Destroy() end)
+	pcall(function() State.SilentChain.Destroy() end)
+	pcall(function() State.StunObj.Destroy() end)
+	pcall(function() State.Moonwalk.Destroy() end)
+	pcall(function() State.FakeParryObj.Destroy() end)
+
+	for _, conn in ipairs(connections) do pcall(function() conn:Disconnect() end) end
+	table.clear(connections)
+
+	local shared = _G.KINON_AutoParryShortcut
+	if type(shared) == "table" then
+		for _, k in ipairs({ "InputConn", "EndConn", "TouchMoveConn" }) do
+			if shared[k] then pcall(function() shared[k]:Disconnect() end); shared[k] = nil end
+		end
+		if shared.Gui then pcall(function() shared.Gui:Destroy() end); shared.Gui = nil end
+	end
+
+	clearParryCircle()
+	if Gui then Gui:Destroy() end
+	if _G.KinonHubBetaUnload == unload then _G.KinonHubBetaUnload = nil end
+end
+_G.KinonHubBetaUnload = unload
+
+local closeConfirm
+local function showCloseConfirm()
+	if closeConfirm or unloaded then return end
+	closeConfirm = new("TextButton", {
+		Name = "CloseConfirm",
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Color3.new(0, 0, 0),
+		BackgroundTransparency = 0.5,
+		Text = "",
+		AutoButtonColor = false,
+		ZIndex = 80,
+	}, Gui)
+	local box = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(280, 142),
+		BackgroundColor3 = C.Panel,
+		Active = true,
+	}, closeConfirm)
+	new("UIScale", { Scale = math.clamp(Scale.Scale + 0.1, 0.75, 1) }, box)
+	corner(box, 14)
+	new("UIStroke", { Color = WHITE, Transparency = 0.7, Thickness = 1 }, box)
+
+	new("TextLabel", {
+		Position = UDim2.fromOffset(16, 14),
+		Size = UDim2.new(1, -32, 0, 22),
+		BackgroundTransparency = 1,
+		Text = "Close Kinon Hub?",
+		TextColor3 = C.Text,
+		Font = Enum.Font.GothamBold,
+		TextSize = 16,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}, box)
+	new("TextLabel", {
+		Position = UDim2.fromOffset(16, 40),
+		Size = UDim2.new(1, -32, 0, 40),
+		BackgroundTransparency = 1,
+		Text = "Are you sure you want to close this UI?",
+		TextColor3 = C.Muted,
+		Font = Enum.Font.Gotham,
+		TextSize = 13,
+		TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+	}, box)
+
+	local function dialogButton(text, x, bg, fg, cb)
+		local b = new("TextButton", {
+			Position = UDim2.new(x, x == 0 and 16 or 4, 1, -52),
+			Size = UDim2.new(0.5, -20, 0, 36),
+			BackgroundColor3 = bg,
+			Text = text,
+			TextColor3 = fg,
+			Font = Enum.Font.GothamBold,
+			TextSize = 14,
+			AutoButtonColor = true,
+		}, box)
+		corner(b, 10)
+		b.MouseButton1Click:Connect(cb)
+		return b
+	end
+	dialogButton("Back", 0, C.Surface, C.Text, function()
+		if closeConfirm then closeConfirm:Destroy(); closeConfirm = nil end
+	end)
+	dialogButton("Continue", 0.5, C.Accent, C.OnAccent, function()
+		if closeConfirm then closeConfirm:Destroy(); closeConfirm = nil end
+		unload()
+	end)
+end
+
+State.Actions.close = showCloseConfirm
+end
+local environment = (getfenv and getfenv()) or _G
+local unpackValues = table.unpack or unpack
+local packValues = table.pack or function(...) return {n = select("#", ...), ...} end
+local captureMetatable = {
+  __index = function(object, key) local cell = rawget(object, false)[key]; return cell[1][cell[2]] end,
+  __newindex = function(object, key, value) local cell = rawget(object, false)[key]; cell[1][cell[2]] = value end
+}
+local function closeCapturedValues(groups, values, first)
+  local closed = {}
+  for _, cells in ipairs(groups) do
+    for _, cell in pairs(cells) do
+      if cell[1] == values and cell[2] >= first then
+        local index = cell[2]
+        closed[index] = values[index]
+        cell[1] = closed
+      end
+    end
+  end
+end
+local functions = {}
+functions["initializeKinonKeySystem"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[103] = nil
+  values[0] = environment.pcall
+  values[1] = environment.error
+  values[2] = environment.type
+  values[3] = environment.typeof
+  values[4] = environment.ipairs
+  values[5] = "PDF8sIfeH47h"
+  do
+    local cells = {}
+    cells[0] = {values, 1}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[6] = function(...) return functions["callback_1"](captured, ...) end
+  end
+  values[7] = {}
+  values[10] = values[7]
+  values[9] = #values[10]
+  values[8] = values[9] + 1
+  do
+    local cells = {}
+    cells[0] = {values, 2}
+    cells[1] = {values, 1}
+    cells[2] = {values, 3}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[9] = function(...) return functions["callback_2"](captured, ...) end
+  end
+  values[7][values[8]] = values[9]
+  values[10] = values[7]
+  values[9] = #values[10]
+  values[8] = values[9] + 1
+  values[103] = 528688
+  do
+    local cells = {}
+    cells[0] = {values, 3}
+    cells[1] = {values, 1}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[9] = function(...) return functions["callback_3"](captured, ...) end
+  end
+  values[7][values[8]] = values[9]
+  values[10] = values[7]
+  values[9] = #values[10]
+  values[8] = values[9] + 1
+  do
+    local cells = {}
+    cells[0] = {values, 1}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[9] = function(...) return functions["callback_4"](captured, ...) end
+  end
+  values[7][values[8]] = values[9]
+  values[10] = values[7]
+  values[9] = #values[10]
+  values[8] = values[9] + 1
+  do
+    local cells = {}
+    cells[0] = {values, 3}
+    cells[1] = {values, 1}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[9] = function(...) return functions["callback_5"](captured, ...) end
+  end
+  values[7][values[8]] = values[9]
+  values[10] = values[7]
+  values[103] = 310102
+  values[9] = #values[10]
+  values[8] = values[9] + 1
+  do
+    local cells = {}
+    cells[0] = {values, 5}
+    cells[1] = {values, 1}
+    cells[2] = {values, 0}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[9] = function(...) return functions["callback_6"](captured, ...) end
+  end
+  values[7][values[8]] = values[9]
+  values[10] = values[7]
+  values[9] = #values[10]
+  values[8] = values[9] + 1
+  do
+    local cells = {}
+    cells[0] = {values, 2}
+    cells[1] = {values, 1}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[9] = function(...) return functions["callback_8"](captured, ...) end
+  end
+  values[7][values[8]] = values[9]
+  values[103] = 304904
+  values[10] = values[7]
+  values[9] = #values[10]
+  values[8] = values[9] + 1
+  do
+    local cells = {}
+    cells[0] = {values, 2}
+    cells[1] = {values, 1}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[9] = function(...) return functions["callback_9"](captured, ...) end
+  end
+  values[7][values[8]] = values[9]
+  values[10] = values[7]
+  values[9] = #values[10]
+  values[8] = values[9] + 1
+  do
+    local cells = {}
+    cells[0] = {values, 0}
+    cells[1] = {values, 5}
+    cells[2] = {values, 1}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[9] = function(...) return functions["callback_10"](captured, ...) end
+  end
+  values[7][values[8]] = values[9]
+  values[8] = false
+  values[9] = values[4]
+  values[10] = values[7]
+  values[103] = 364567
+  values[9], values[10], values[11] = values[9](unpackValues(values, 10, 10))
+  if type(values[9]) ~= "function" then
+    local source = values[9]
+    if type(source) == "table" and getmetatable(source) == nil then
+      values[9], values[10], values[11] = next, source, nil
+    else
+      values[9] = coroutine.wrap(function() for key, value in source do coroutine.yield(key, value) end end)
+      values[10], values[11] = nil, nil
+    end
+  end
+  do
+    local leaveLoop53 = 0
+    while true do
+      values[103] = 589733
+      local results = packValues(values[9](values[10], values[11]))
+      for index = 1, 2 do values[11 + index] = results[index] end
+      if values[12] ~= nil then
+        values[11] = values[12]
+        do
+          local leaveLoop54 = 0
+          while true do
+            values[103] = 786783
+            values[14] = values[0]
+            values[15] = values[13]
+            values[14] = values[14](unpackValues(values, 15, 15))
+            if values[14] then
+              leaveLoop54 = 53
+              break
+            else
+              values[103] = 786783
+              values[8] = true
+              local results = packValues(values[9](values[10], values[11]))
+              for index = 1, 2 do values[11 + index] = results[index] end
+              if values[12] ~= nil then
+                values[11] = values[12]
+                continue
+              end
+            end
+            leaveLoop54 = 55
+            break
+          end
+          if leaveLoop54 == 53 then
+            continue
+          elseif leaveLoop54 == 55 then
+          end
+        end
+      end
+      leaveLoop53 = 55
+      break
+    end
+  end
+  values[103] = 100773
+  values[9] = 0
+  do
+    local cells = {}
+    cells[0] = {values, 0}
+    cells[1] = {values, 9}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[10] = function(...) return functions["callback_12"](captured, ...) end
+  end
+  values[11] = {}
+  values[14] = values[11]
+  values[13] = #values[14]
+  values[12] = values[13] + 1
+  do
+    local cells = {}
+    cells[0] = {values, 3}
+    cells[1] = {values, 2}
+    cells[2] = {values, 1}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[13] = function(...) return functions["callback_13"](captured, ...) end
+  end
+  values[11][values[12]] = values[13]
+  values[14] = values[11]
+  values[13] = #values[14]
+  values[12] = values[13] + 1
+  do
+    local cells = {}
+    cells[0] = {values, 2}
+    cells[1] = {values, 1}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[13] = function(...) return functions["callback_14"](captured, ...) end
+  end
+  values[11][values[12]] = values[13]
+  values[103] = 546135
+  values[14] = values[11]
+  values[13] = #values[14]
+  values[12] = values[13] + 1
+  do
+    local cells = {}
+    cells[0] = {values, 1}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[13] = function(...) return functions["callback_15"](captured, ...) end
+  end
+  values[11][values[12]] = values[13]
+  values[14] = values[11]
+  values[13] = #values[14]
+  values[12] = values[13] + 1
+  do
+    local cells = {}
+    cells[0] = {values, 1}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[13] = function(...) return functions["callback_16"](captured, ...) end
+  end
+  values[11][values[12]] = values[13]
+  values[14] = values[11]
+  values[103] = 634287
+  values[13] = #values[14]
+  values[12] = values[13] + 1
+  do
+    local cells = {}
+    cells[0] = {values, 2}
+    cells[1] = {values, 1}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[13] = function(...) return functions["callback_17"](captured, ...) end
+  end
+  values[11][values[12]] = values[13]
+  values[14] = values[11]
+  values[13] = #values[14]
+  values[12] = values[13] + 1
+  do
+    local cells = {}
+    cells[0] = {values, 1}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[13] = function(...) return functions["callback_18"](captured, ...) end
+  end
+  values[11][values[12]] = values[13]
+  values[12] = values[4]
+  values[13] = values[11]
+  values[103] = 876995
+  values[12], values[13], values[14] = values[12](unpackValues(values, 13, 13))
+  if type(values[12]) ~= "function" then
+    local source = values[12]
+    if type(source) == "table" and getmetatable(source) == nil then
+      values[12], values[13], values[14] = next, source, nil
+    else
+      values[12] = coroutine.wrap(function() for key, value in source do coroutine.yield(key, value) end end)
+      values[13], values[14] = nil, nil
+    end
+  end
+  values[103] = 20016
+  local results = packValues(values[12](values[13], values[14]))
+  for index = 1, 2 do values[14 + index] = results[index] end
+  if values[15] ~= nil then
+    values[14] = values[15]
+    do
+      local leaveLoop99 = 0
+      while true do
+        values[103] = 960417
+        values[17] = values[10]
+        values[18] = values[16]
+        values[17](unpackValues(values, 18, 18))
+        local results = packValues(values[12](values[13], values[14]))
+        for index = 1, 2 do values[14 + index] = results[index] end
+        if values[15] ~= nil then
+          values[14] = values[15]
+          continue
+        end
+        leaveLoop99 = 100
+        break
+      end
+    end
+  end
+  values[103] = 992955
+  values[12] = values[8]
+  if values[12] then
+    values[103] = 279976
+    values[12] = values[6]
+    values[12](unpackValues(values, 13, 12))
+    closeCapturedValues(captureGroups, values, 0)
+    return
+  else
+    values[103] = 992955
+    if not (3 <= values[9]) then
+      values[103] = 402146
+      closeCapturedValues(captureGroups, values, 0)
+      values[1] = environment.game
+      values[1] = values[1]
+      values[0] = values[1]["GetService"]
+      values[2] = "Players"
+      values[0] = values[0](unpackValues(values, 1, 2))
+      values[2] = environment.game
+      values[2] = values[2]
+      values[1] = values[2]["GetService"]
+      values[3] = "StarterGui"
+      values[1] = values[1](unpackValues(values, 2, 3))
+      values[3] = environment.game
+      values[3] = values[3]
+      values[2] = values[3]["GetService"]
+      values[4] = "TweenService"
+      values[2] = values[2](unpackValues(values, 3, 4))
+      values[103] = 506259
+      values[4] = environment.game
+      values[4] = values[4]
+      values[3] = values[4]["GetService"]
+      values[5] = "UserInputService"
+      values[3] = values[3](unpackValues(values, 4, 5))
+      values[5] = environment.game
+      values[5] = values[5]
+      values[4] = values[5]["GetService"]
+      values[6] = "HttpService"
+      values[4] = values[4](unpackValues(values, 5, 6))
+      values[5] = values[0]["LocalPlayer"]
+      values[103] = 18590
+      values[6] = "https://raw.githubusercontent.com/finzgo30-blip/White-list-/refs/heads/main/White-list"
+      values[7] = "https://raw.githubusercontent.com/finzgo30-blip/Black-list/refs/heads/main/Banlist.json"
+      values[8] = "https://raw.githubusercontent.com/finzgo30-blip/violence-districk-1/refs/heads/main/KinonHub"
+      values[9] = "kinon_key.txt"
+      values[10] = "kinon_get.txt"
+      values[12] = 24 * 60
+      values[11] = values[12] * 60
+      values[12] = 93978595733734
+      values[13] = 6739698191
+      values[14] = {}
+      values[15] = "violence district"
+      values[16] = "violencedistrict"
+      values[17] = "violence-district"
+      for index = 1, 3 do values[14][0 + index] = values[14 + index] end
+      values[16] = environment.Color3
+      values[15] = values[16]["fromRGB"]
+      values[103] = 969580
+      values[16] = 10
+      values[17] = 10
+      values[18] = 10
+      values[15] = values[15](unpackValues(values, 16, 18))
+      values[17] = environment.Color3
+      values[16] = values[17]["fromRGB"]
+      values[17] = 17
+      values[18] = 17
+      values[19] = 17
+      values[103] = 829603
+      values[16] = values[16](unpackValues(values, 17, 19))
+      values[18] = environment.Color3
+      values[17] = values[18]["fromRGB"]
+      values[18] = 38
+      values[19] = 38
+      values[20] = 38
+      values[17] = values[17](unpackValues(values, 18, 20))
+      values[19] = environment.Color3
+      values[103] = 176756
+      values[18] = values[19]["fromRGB"]
+      values[19] = 24
+      values[20] = 24
+      values[21] = 24
+      values[18] = values[18](unpackValues(values, 19, 21))
+      values[20] = environment.Color3
+      values[19] = values[20]["fromRGB"]
+      values[20] = 242
+      values[21] = 242
+      values[22] = 242
+      values[19] = values[19](unpackValues(values, 20, 22))
+      values[21] = environment.Color3
+      values[20] = values[21]["fromRGB"]
+      values[21] = 130
+      values[22] = 130
+      values[23] = 130
+      values[103] = 357395
+      values[20] = values[20](unpackValues(values, 21, 23))
+      values[22] = environment.Color3
+      values[21] = values[22]["fromRGB"]
+      values[22] = 70
+      values[23] = 70
+      values[24] = 70
+      values[21] = values[21](unpackValues(values, 22, 24))
+      values[23] = environment.Color3
+      values[22] = values[23]["fromRGB"]
+      values[23] = 80
+      values[103] = 609656
+      values[24] = 220
+      values[25] = 130
+      values[22] = values[22](unpackValues(values, 23, 25))
+      values[24] = environment.Color3
+      values[23] = values[24]["fromRGB"]
+      values[24] = 240
+      values[25] = 90
+      values[26] = 90
+      values[23] = values[23](unpackValues(values, 24, 26))
+      values[25] = environment.Color3
+      values[24] = values[25]["fromRGB"]
+      values[25] = 255
+      values[26] = 255
+      values[27] = 255
+      values[24] = values[24](unpackValues(values, 25, 27))
+      values[26] = environment.Color3
+      values[103] = 442574
+      values[25] = values[26]["fromRGB"]
+      values[26] = 48
+      values[27] = 48
+      values[28] = 48
+      values[25] = values[25](unpackValues(values, 26, 28))
+      values[26] = {}
+      values[27] = "rbxassetid://10140231007"
+      for index = 1, 1 do values[26][0 + index] = values[26 + index] end
+      values[27] = {}
+      do
+        local cells = {}
+        local captured = setmetatable({}, captureMetatable)
+        rawset(captured, false, cells)
+        captureGroups[#captureGroups + 1] = cells
+        values[28] = function(...) return functions["trimInput"](captured, ...) end
+      end
+      do
+        local cells = {}
+        cells[0] = {values, 28}
+        local captured = setmetatable({}, captureMetatable)
+        rawset(captured, false, cells)
+        captureGroups[#captureGroups + 1] = cells
+        values[29] = function(...) return functions["normalizeKeyInput"](captured, ...) end
+      end
+      do
+        local cells = {}
+        local captured = setmetatable({}, captureMetatable)
+        rawset(captured, false, cells)
+        captureGroups[#captureGroups + 1] = cells
+        values[30] = function(...) return functions["callback_21"](captured, ...) end
+      end
+      do
+        local cells = {}
+        local captured = setmetatable({}, captureMetatable)
+        rawset(captured, false, cells)
+        captureGroups[#captureGroups + 1] = cells
+        values[31] = function(...) return functions["formatRemainingTime"](captured, ...) end
+      end
+      values[103] = 801587
+      do
+        local cells = {}
+        cells[0] = {values, 12}
+        cells[1] = {values, 13}
+        cells[2] = {values, 14}
+        local captured = setmetatable({}, captureMetatable)
+        rawset(captured, false, cells)
+        captureGroups[#captureGroups + 1] = cells
+        values[32] = function(...) return functions["callback_23"](captured, ...) end
+      end
+      do
+        local cells = {}
+        cells[0] = {values, 6}
+        cells[1] = {values, 28}
+        cells[2] = {values, 29}
+        cells[3] = {values, 27}
+        local captured = setmetatable({}, captureMetatable)
+        rawset(captured, false, cells)
+        captureGroups[#captureGroups + 1] = cells
+        values[33] = function(...) return functions["callback_24"](captured, ...) end
+      end
+      do
+        local cells = {}
+        cells[0] = {values, 1}
+        local captured = setmetatable({}, captureMetatable)
+        rawset(captured, false, cells)
+        captureGroups[#captureGroups + 1] = cells
+        values[34] = function(...) return functions["callback_26"](captured, ...) end
+      end
+      do
+        local cells = {}
+        cells[0] = {values, 7}
+        cells[1] = {values, 4}
+        cells[2] = {values, 29}
+        cells[3] = {values, 5}
+        cells[4] = {values, 34}
+        local captured = setmetatable({}, captureMetatable)
+        rawset(captured, false, cells)
+        captureGroups[#captureGroups + 1] = cells
+        values[35] = function(...) return functions["callback_28"](captured, ...) end
+      end
+      values[36] = values[35]
+      values[36] = values[36](unpackValues(values, 37, 36))
+      if not values[36] then
+        values[103] = 970038
+        do
+          local cells = {}
+          cells[0] = {values, 9}
+          local captured = setmetatable({}, captureMetatable)
+          rawset(captured, false, cells)
+          captureGroups[#captureGroups + 1] = cells
+          values[36] = function(...) return functions["callback_31"](captured, ...) end
+        end
+        do
+          local cells = {}
+          cells[0] = {values, 36}
+          cells[1] = {values, 30}
+          local captured = setmetatable({}, captureMetatable)
+          rawset(captured, false, cells)
+          captureGroups[#captureGroups + 1] = cells
+          values[37] = function(...) return functions["callback_32"](captured, ...) end
+        end
+        do
+          local cells = {}
+          cells[0] = {values, 9}
+          cells[1] = {values, 30}
+          cells[2] = {values, 11}
+          local captured = setmetatable({}, captureMetatable)
+          rawset(captured, false, cells)
+          captureGroups[#captureGroups + 1] = cells
+          values[38] = function(...) return functions["callback_33"](captured, ...) end
+        end
+        do
+          local cells = {}
+          cells[0] = {values, 36}
+          cells[1] = {values, 30}
+          local captured = setmetatable({}, captureMetatable)
+          rawset(captured, false, cells)
+          captureGroups[#captureGroups + 1] = cells
+          values[39] = function(...) return functions["callback_34"](captured, ...) end
+        end
+        do
+          local cells = {}
+          cells[0] = {values, 10}
+          local captured = setmetatable({}, captureMetatable)
+          rawset(captured, false, cells)
+          captureGroups[#captureGroups + 1] = cells
+          values[40] = function(...) return functions["callback_35"](captured, ...) end
+        end
+        do
+          local cells = {}
+          cells[0] = {values, 10}
+          cells[1] = {values, 30}
+          local captured = setmetatable({}, captureMetatable)
+          rawset(captured, false, cells)
+          captureGroups[#captureGroups + 1] = cells
+          values[41] = function(...) return functions["callback_36"](captured, ...) end
+        end
+        do
+          local cells = {}
+          cells[0] = {values, 40}
+          cells[1] = {values, 30}
+          cells[2] = {values, 11}
+          local captured = setmetatable({}, captureMetatable)
+          rawset(captured, false, cells)
+          captureGroups[#captureGroups + 1] = cells
+          values[42] = function(...) return functions["callback_37"](captured, ...) end
+        end
+        do
+          local cells = {}
+          cells[0] = {values, 37}
+          cells[1] = {values, 39}
+          local captured = setmetatable({}, captureMetatable)
+          rawset(captured, false, cells)
+          captureGroups[#captureGroups + 1] = cells
+          values[43] = function(...) return functions["callback_38"](captured, ...) end
+        end
+        values[44] = values[37]
+        values[44] = values[44](unpackValues(values, 45, 44))
+        values[45] = values[44]
+        if not values[45] then
+          values[103] = 382112
+          do
+            local cells = {}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[44] = function(...) return functions["extractAssetId"](captured, ...) end
+          end
+          do
+            local cells = {}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[45] = function(...) return functions["callback_41"](captured, ...) end
+          end
+          do
+            local cells = {}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[46] = function(...) return functions["callback_43"](captured, ...) end
+          end
+          do
+            local cells = {}
+            cells[0] = {values, 26}
+            cells[1] = {values, 44}
+            cells[2] = {values, 45}
+            cells[3] = {values, 46}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[47] = function(...) return functions["callback_47"](captured, ...) end
+          end
+          for index = 48, 48 do values[index] = nil end
+          values[49] = environment.pcall
+          do
+            local cells = {}
+            cells[0] = {values, 48}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[50] = function(...) return functions["callback_49"](captured, ...) end
+          end
+          values[49](unpackValues(values, 50, 50))
+          values[49] = values[48]
+          if values[49] then
+          else
+            values[103] = 382112
+            values[50] = values[5]
+            values[49] = values[50]["WaitForChild"]
+            values[103] = 837070
+            values[51] = "PlayerGui"
+            values[49] = values[49](unpackValues(values, 50, 51))
+          end
+          values[103] = 499121
+          values[48] = values[49]
+          values[49] = environment.ipairs
+          values[50] = {}
+          values[51] = values[48]
+          values[53] = values[5]
+          values[52] = values[53]["WaitForChild"]
+          values[54] = "PlayerGui"
+          local results = packValues(values[52](unpackValues(values, 53, 54)))
+          registerTop = 52 + results.n - 1
+          for index = 52, registerTop do values[index] = results[index - 52 + 1] end
+          for index = 1, registerTop - 50 do values[50][0 + index] = values[50 + index] end
+          values[49], values[50], values[51] = values[49](unpackValues(values, 50, 50))
+          values[103] = 499121.0
+          if type(values[49]) ~= "function" then
+            local source = values[49]
+            if type(source) == "table" and getmetatable(source) == nil then
+              values[49], values[50], values[51] = next, source, nil
+            else
+              values[49] = coroutine.wrap(function() for key, value in source do coroutine.yield(key, value) end end)
+              values[50], values[51] = nil, nil
+            end
+          end
+          do
+            local leaveLoop277 = 0
+            while true do
+              values[103] = 441130.0
+              local results = packValues(values[49](values[50], values[51]))
+              for index = 1, 2 do values[51 + index] = results[index] end
+              if values[52] ~= nil then
+                values[51] = values[52]
+                do
+                  local leaveLoop279 = 0
+                  while true do
+                    values[103] = 973365.0
+                    values[55] = values[53]
+                    values[54] = values[55]["FindFirstChild"]
+                    values[56] = "KinonKeySystem"
+                    values[54] = values[54](unpackValues(values, 55, 56))
+                    values[55] = values[54]
+                    if not values[55] then
+                      leaveLoop279 = 277
+                      break
+                    else
+                      values[103] = 973365.0
+                      values[56] = values[54]
+                      values[55] = values[56]["Destroy"]
+                      values[55](unpackValues(values, 56, 56))
+                      local results = packValues(values[49](values[50], values[51]))
+                      for index = 1, 2 do values[51 + index] = results[index] end
+                      if values[52] ~= nil then
+                        values[51] = values[52]
+                        continue
+                      end
+                    end
+                    leaveLoop279 = 280
+                    break
+                  end
+                  if leaveLoop279 == 277 then
+                    continue
+                  elseif leaveLoop279 == 280 then
+                  end
+                end
+              end
+              leaveLoop277 = 280
+              break
+            end
+          end
+          values[103] = 267653.0
+          values[49] = values[32]
+          values[49] = values[49](unpackValues(values, 50, 49))
+          values[50] = values[49]
+          if not values[50] then
+          else
+            values[103] = 267653.0
+            values[50] = 0
+          end
+          values[103] = 2062.0
+          if values[50] then
+          else
+            values[103] = 2062.0
+            values[50] = 46
+          end
+          values[103] = 871382.0
+          values[51] = 400
+          values[52] = 330 + values[50]
+          values[54] = environment.Instance
+          values[53] = values[54]["new"]
+          values[54] = "ScreenGui"
+          values[53] = values[53](unpackValues(values, 54, 54))
+          values[54] = "KinonKeySystem"
+          values[53]["Name"] = values[54]
+          values[54] = false
+          values[53]["ResetOnSpawn"] = values[54]
+          values[54] = true
+          values[53]["IgnoreGuiInset"] = values[54]
+          values[54] = 10000
+          values[53]["DisplayOrder"] = values[54]
+          values[54] = environment.pcall
+          do
+            local cells = {}
+            cells[0] = {values, 53}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[55] = function(...) return functions["callback_50"](captured, ...) end
+          end
+          values[103] = 437287.0
+          values[54](unpackValues(values, 55, 55))
+          values[54] = values[48]
+          values[53]["Parent"] = values[54]
+          values[54] = {}
+          values[56] = values[53]["Destroying"]
+          values[56] = values[56]
+          values[55] = values[56]["Connect"]
+          do
+            local cells = {}
+            cells[0] = {values, 54}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[57] = function(...) return functions["callback_51"](captured, ...) end
+          end
+          values[55](unpackValues(values, 56, 57))
+          values[103] = 766321.0
+          values[56] = environment.Instance
+          values[55] = values[56]["new"]
+          values[56] = "Frame"
+          values[55] = values[55](unpackValues(values, 56, 56))
+          values[57] = environment.UDim2
+          values[56] = values[57]["fromScale"]
+          values[57] = 1
+          values[58] = 1
+          values[56] = values[56](unpackValues(values, 57, 58))
+          values[103] = 837025.0
+          values[55]["Size"] = values[56]
+          values[57] = environment.Color3
+          values[56] = values[57]["new"]
+          values[57] = 0
+          values[58] = 0
+          values[59] = 0
+          values[56] = values[56](unpackValues(values, 57, 59))
+          values[55]["BackgroundColor3"] = values[56]
+          values[56] = 1
+          values[55]["BackgroundTransparency"] = values[56]
+          values[56] = 0
+          values[103] = 96878.0
+          values[55]["BorderSizePixel"] = values[56]
+          values[56] = true
+          values[55]["Active"] = values[56]
+          values[56] = values[53]
+          values[55]["Parent"] = values[56]
+          values[58] = values[2]
+          values[57] = values[58]["Create"]
+          values[59] = values[55]
+          values[62] = environment.TweenInfo
+          values[60] = values[62]["new"]
+          values[61] = 0.3
+          values[64] = environment.Enum
+          values[103] = 424114.0
+          values[63] = values[64]["EasingStyle"]
+          values[62] = values[63]["Quad"]
+          values[60] = values[60](unpackValues(values, 61, 62))
+          values[61] = {}
+          values[62] = 0.5
+          values[61]["BackgroundTransparency"] = values[62]
+          values[57] = values[57](unpackValues(values, 58, 61))
+          values[57] = values[57]
+          values[56] = values[57]["Play"]
+          values[56](unpackValues(values, 57, 57))
+          values[57] = environment.Instance
+          values[56] = values[57]["new"]
+          values[57] = "Frame"
+          values[56] = values[56](unpackValues(values, 57, 57))
+          values[57] = "KeyPanel"
+          values[56]["Name"] = values[57]
+          values[103] = 823574.0
+          values[58] = environment.Vector2
+          values[57] = values[58]["new"]
+          values[58] = 0.5
+          values[59] = 0.5
+          values[57] = values[57](unpackValues(values, 58, 59))
+          values[56]["AnchorPoint"] = values[57]
+          values[58] = environment.UDim2
+          values[57] = values[58]["fromScale"]
+          values[58] = 0.5
+          values[59] = 0.5
+          values[57] = values[57](unpackValues(values, 58, 59))
+          values[56]["Position"] = values[57]
+          values[58] = environment.UDim2
+          values[103] = 549479.0
+          values[57] = values[58]["fromOffset"]
+          values[58] = values[51]
+          values[59] = values[52]
+          values[57] = values[57](unpackValues(values, 58, 59))
+          values[56]["Size"] = values[57]
+          values[57] = values[16]
+          values[56]["BackgroundColor3"] = values[57]
+          values[57] = 0
+          values[56]["BorderSizePixel"] = values[57]
+          values[57] = true
+          values[103] = 139371.0
+          values[56]["ClipsDescendants"] = values[57]
+          values[57] = values[55]
+          values[56]["Parent"] = values[57]
+          values[58] = environment.Instance
+          values[57] = values[58]["new"]
+          values[58] = "UICorner"
+          values[59] = values[56]
+          values[57] = values[57](unpackValues(values, 58, 59))
+          values[59] = environment.UDim
+          values[58] = values[59]["new"]
+          values[59] = 0
+          values[60] = 22
+          values[103] = 812291.0
+          values[58] = values[58](unpackValues(values, 59, 60))
+          values[57]["CornerRadius"] = values[58]
+          values[58] = environment.Instance
+          values[57] = values[58]["new"]
+          values[58] = "UIGradient"
+          values[59] = values[56]
+          values[57] = values[57](unpackValues(values, 58, 59))
+          values[59] = environment.ColorSequence
+          values[103] = 443664.0
+          values[58] = values[59]["new"]
+          values[59] = {}
+          values[61] = environment.ColorSequenceKeypoint
+          values[60] = values[61]["new"]
+          values[61] = 0
+          values[62] = values[16]
+          values[60] = values[60](unpackValues(values, 61, 62))
+          values[62] = environment.ColorSequenceKeypoint
+          values[61] = values[62]["new"]
+          values[62] = 1
+          values[63] = values[15]
+          values[103] = 482337.0
+          local results = packValues(values[61](unpackValues(values, 62, 63)))
+          registerTop = 61 + results.n - 1
+          for index = 61, registerTop do values[index] = results[index - 61 + 1] end
+          for index = 1, registerTop - 59 do values[59][0 + index] = values[59 + index] end
+          values[103] = 482337
+          values[103] = 482337.0
+          values[58] = values[58](unpackValues(values, 59, 59))
+          values[57]["Color"] = values[58]
+          values[58] = 135
+          values[57]["Rotation"] = values[58]
+          values[59] = environment.Instance
+          values[58] = values[59]["new"]
+          values[59] = "UIStroke"
+          values[103] = 675808.0
+          values[60] = values[56]
+          values[58] = values[58](unpackValues(values, 59, 60))
+          values[60] = environment.Color3
+          values[59] = values[60]["fromRGB"]
+          values[60] = 60
+          values[61] = 60
+          values[62] = 60
+          values[59] = values[59](unpackValues(values, 60, 62))
+          values[58]["Color"] = values[59]
+          values[59] = 1
+          values[58]["Thickness"] = values[59]
+          values[61] = environment.Enum
+          values[60] = values[61]["ApplyStrokeMode"]
+          values[103] = 695177.0
+          values[59] = values[60]["Border"]
+          values[58]["ApplyStrokeMode"] = values[59]
+          values[60] = environment.Instance
+          values[59] = values[60]["new"]
+          values[60] = "UIScale"
+          values[61] = values[56]
+          values[59] = values[59](unpackValues(values, 60, 61))
+          values[60] = 0.7
+          values[59]["Scale"] = values[60]
+          values[60] = 1
+          values[62] = environment.workspace
+          values[61] = values[62]["CurrentCamera"]
+          do
+            local cells = {}
+            cells[0] = {values, 61}
+            cells[1] = {values, 51}
+            cells[2] = {values, 52}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[62] = function(...) return functions["callback_53"](captured, ...) end
+          end
+          values[63] = values[62]
+          values[103] = 892242.0
+          values[63] = values[63](unpackValues(values, 64, 63))
+          values[60] = values[63]
+          values[65] = values[2]
+          values[64] = values[65]["Create"]
+          values[66] = values[59]
+          values[69] = environment.TweenInfo
+          values[67] = values[69]["new"]
+          values[68] = 0.35
+          values[72] = environment.Enum
+          values[71] = values[72]["EasingStyle"]
+          values[69] = values[71]["Back"]
+          values[72] = environment.Enum
+          values[71] = values[72]["EasingDirection"]
+          values[70] = values[71]["Out"]
+          values[67] = values[67](unpackValues(values, 68, 70))
+          values[68] = {}
+          values[103] = 28910.0
+          values[69] = values[60]
+          values[68]["Scale"] = values[69]
+          values[64] = values[64](unpackValues(values, 65, 68))
+          values[64] = values[64]
+          values[63] = values[64]["Play"]
+          values[63](unpackValues(values, 64, 64))
+          values[63] = values[61]
+          if not values[63] then
+          else
+            values[103] = 28910.0
+            values[65] = values[54]
+            values[64] = #values[65]
+            values[63] = values[64] + 1
+            values[66] = values[61]
+            values[65] = values[66]["GetPropertyChangedSignal"]
+            values[67] = "ViewportSize"
+            values[65] = values[65](unpackValues(values, 66, 67))
+            values[65] = values[65]
+            values[64] = values[65]["Connect"]
+            do
+              local cells = {}
+              cells[0] = {values, 62}
+              cells[1] = {values, 60}
+              cells[2] = {values, 59}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[66] = function(...) return functions["callback_54"](captured, ...) end
+            end
+            values[64] = values[64](unpackValues(values, 65, 66))
+            values[103] = 12396.0
+            values[54][values[63]] = values[64]
+          end
+          values[103] = 758159.0
+          values[64] = environment.Instance
+          values[63] = values[64]["new"]
+          values[64] = "Frame"
+          values[63] = values[63](unpackValues(values, 64, 64))
+          values[65] = environment.UDim2
+          values[64] = values[65]["new"]
+          values[65] = 1
+          values[69] = 112
+          values[66] = -values[69]
+          values[67] = 0
+          values[68] = 58
+          values[64] = values[64](unpackValues(values, 65, 68))
+          values[63]["Size"] = values[64]
+          values[103] = 393573.0
+          values[65] = environment.UDim2
+          values[64] = values[65]["fromOffset"]
+          values[65] = 28
+          values[66] = 22
+          values[64] = values[64](unpackValues(values, 65, 66))
+          values[63]["Position"] = values[64]
+          values[64] = 1
+          values[63]["BackgroundTransparency"] = values[64]
+          values[64] = true
+          values[63]["Active"] = values[64]
+          values[64] = values[56]
+          values[63]["Parent"] = values[64]
+          values[103] = 1032141.0
+          values[65] = environment.Instance
+          values[64] = values[65]["new"]
+          values[65] = "Frame"
+          values[64] = values[64](unpackValues(values, 65, 65))
+          values[66] = environment.UDim2
+          values[65] = values[66]["fromOffset"]
+          values[66] = 42
+          values[67] = 42
+          values[65] = values[65](unpackValues(values, 66, 67))
+          values[64]["Size"] = values[65]
+          values[66] = environment.UDim2
+          values[65] = values[66]["fromOffset"]
+          values[66] = 0
+          values[67] = 8
+          values[65] = values[65](unpackValues(values, 66, 67))
+          values[103] = 160318.0
+          values[64]["Position"] = values[65]
+          values[66] = environment.Color3
+          values[65] = values[66]["fromRGB"]
+          values[66] = 32
+          values[67] = 32
+          values[68] = 32
+          values[65] = values[65](unpackValues(values, 66, 68))
+          values[64]["BackgroundColor3"] = values[65]
+          values[103] = 914429.0
+          values[65] = 0
+          values[64]["BorderSizePixel"] = values[65]
+          values[65] = values[63]
+          values[64]["Parent"] = values[65]
+          values[66] = environment.Instance
+          values[65] = values[66]["new"]
+          values[66] = "UICorner"
+          values[67] = values[64]
+          values[65] = values[65](unpackValues(values, 66, 67))
+          values[103] = 483470.0
+          values[67] = environment.UDim
+          values[66] = values[67]["new"]
+          values[67] = 0
+          values[68] = 12
+          values[66] = values[66](unpackValues(values, 67, 68))
+          values[65]["CornerRadius"] = values[66]
+          values[66] = environment.Instance
+          values[65] = values[66]["new"]
+          values[66] = "UIStroke"
+          values[67] = values[64]
+          values[65] = values[65](unpackValues(values, 66, 67))
+          values[67] = environment.Color3
+          values[66] = values[67]["fromRGB"]
+          values[67] = 60
+          values[68] = 60
+          values[69] = 60
+          values[103] = 576667.0
+          values[66] = values[66](unpackValues(values, 67, 69))
+          values[65]["Color"] = values[66]
+          values[66] = 1
+          values[65]["Thickness"] = values[66]
+          values[68] = environment.Enum
+          values[67] = values[68]["ApplyStrokeMode"]
+          values[66] = values[67]["Border"]
+          values[65]["ApplyStrokeMode"] = values[66]
+          values[67] = environment.Instance
+          values[66] = values[67]["new"]
+          values[67] = "ImageLabel"
+          values[66] = values[66](unpackValues(values, 67, 67))
+          values[68] = environment.UDim2
+          values[67] = values[68]["fromScale"]
+          values[103] = 695246.0
+          values[68] = 1
+          values[69] = 1
+          values[67] = values[67](unpackValues(values, 68, 69))
+          values[66]["Size"] = values[67]
+          values[67] = 1
+          values[66]["BackgroundTransparency"] = values[67]
+          values[69] = environment.Enum
+          values[68] = values[69]["ScaleType"]
+          values[67] = values[68]["Crop"]
+          values[66]["ScaleType"] = values[67]
+          values[67] = ""
+          values[66]["Image"] = values[67]
+          values[103] = 124917.0
+          values[67] = values[64]
+          values[66]["Parent"] = values[67]
+          values[68] = environment.Instance
+          values[67] = values[68]["new"]
+          values[68] = "UICorner"
+          values[69] = values[66]
+          values[67] = values[67](unpackValues(values, 68, 69))
+          values[69] = environment.UDim
+          values[68] = values[69]["new"]
+          values[69] = 0
+          values[70] = 12
+          values[68] = values[68](unpackValues(values, 69, 70))
+          values[67]["CornerRadius"] = values[68]
+          values[68] = environment.Instance
+          values[67] = values[68]["new"]
+          values[103] = 639358.0
+          values[68] = "TextLabel"
+          values[67] = values[67](unpackValues(values, 68, 68))
+          values[69] = environment.UDim2
+          values[68] = values[69]["fromScale"]
+          values[69] = 1
+          values[70] = 1
+          values[68] = values[68](unpackValues(values, 69, 70))
+          values[67]["Size"] = values[68]
+          values[68] = 1
+          values[67]["BackgroundTransparency"] = values[68]
+          values[70] = environment.Enum
+          values[69] = values[70]["Font"]
+          values[68] = values[69]["GothamBold"]
+          values[67]["Font"] = values[68]
+          values[68] = "K"
+          values[67]["Text"] = values[68]
+          values[103] = 688121.0
+          values[68] = values[24]
+          values[67]["TextColor3"] = values[68]
+          values[68] = 20
+          values[67]["TextSize"] = values[68]
+          values[68] = false
+          values[67]["Visible"] = values[68]
+          values[68] = values[64]
+          values[67]["Parent"] = values[68]
+          values[68] = values[47]
+          values[69] = values[66]
+          values[103] = 956678.0
+          values[70] = values[67]
+          values[68](unpackValues(values, 69, 70))
+          values[69] = environment.Instance
+          values[68] = values[69]["new"]
+          values[69] = "TextLabel"
+          values[68] = values[68](unpackValues(values, 69, 69))
+          values[69] = 1
+          values[68]["BackgroundTransparency"] = values[69]
+          values[70] = environment.UDim2
+          values[69] = values[70]["fromOffset"]
+          values[70] = 56
+          values[103] = 124047.0
+          values[71] = 8
+          values[69] = values[69](unpackValues(values, 70, 71))
+          values[68]["Position"] = values[69]
+          values[70] = environment.UDim2
+          values[69] = values[70]["new"]
+          values[70] = 1
+          values[74] = 56
+          values[71] = -values[74]
+          values[72] = 0
+          values[73] = 26
+          values[103] = 628392.0
+          values[69] = values[69](unpackValues(values, 70, 73))
+          values[68]["Size"] = values[69]
+          values[71] = environment.Enum
+          values[70] = values[71]["Font"]
+          values[69] = values[70]["GothamBold"]
+          values[68]["Font"] = values[69]
+          values[69] = "KINON HUB"
+          values[68]["Text"] = values[69]
+          values[69] = values[24]
+          values[68]["TextColor3"] = values[69]
+          values[69] = 20
+          values[68]["TextSize"] = values[69]
+          values[71] = environment.Enum
+          values[70] = values[71]["TextXAlignment"]
+          values[103] = 1019331.0
+          values[69] = values[70]["Left"]
+          values[68]["TextXAlignment"] = values[69]
+          values[69] = values[63]
+          values[68]["Parent"] = values[69]
+          values[70] = environment.Instance
+          values[69] = values[70]["new"]
+          values[70] = "Frame"
+          values[69] = values[69](unpackValues(values, 70, 70))
+          values[71] = environment.UDim2
+          values[70] = values[71]["fromOffset"]
+          values[71] = 56
+          values[72] = 34
+          values[103] = 111540.0
+          values[70] = values[70](unpackValues(values, 71, 72))
+          values[69]["Position"] = values[70]
+          values[71] = environment.UDim2
+          values[70] = values[71]["new"]
+          values[71] = 1
+          values[75] = 56
+          values[72] = -values[75]
+          values[73] = 0
+          values[74] = 16
+          values[70] = values[70](unpackValues(values, 71, 74))
+          values[69]["Size"] = values[70]
+          values[70] = 1
+          values[103] = 84186.0
+          values[69]["BackgroundTransparency"] = values[70]
+          values[70] = values[63]
+          values[69]["Parent"] = values[70]
+          values[71] = environment.Instance
+          values[70] = values[71]["new"]
+          values[71] = "Frame"
+          values[70] = values[70](unpackValues(values, 71, 71))
+          values[72] = environment.UDim2
+          values[71] = values[72]["fromOffset"]
+          values[72] = 6
+          values[73] = 6
+          values[71] = values[71](unpackValues(values, 72, 73))
+          values[70]["Size"] = values[71]
+          values[103] = 994489.0
+          values[72] = environment.UDim2
+          values[71] = values[72]["fromOffset"]
+          values[72] = 0
+          values[73] = 5
+          values[71] = values[71](unpackValues(values, 72, 73))
+          values[70]["Position"] = values[71]
+          values[71] = values[49]
+          if not values[71] then
+          else
+            values[103] = 994489.0
+            values[71] = values[22]
+          end
+          values[103] = 337007.0
+          if values[71] then
+          else
+            values[103] = 337007.0
+            values[71] = values[23]
+          end
+          values[103] = 475053.0
+          values[70]["BackgroundColor3"] = values[71]
+          values[71] = 0
+          values[70]["BorderSizePixel"] = values[71]
+          values[71] = values[69]
+          values[70]["Parent"] = values[71]
+          values[72] = environment.Instance
+          values[71] = values[72]["new"]
+          values[72] = "UICorner"
+          values[73] = values[70]
+          values[71] = values[71](unpackValues(values, 72, 73))
+          values[73] = environment.UDim
+          values[103] = 584782.0
+          values[72] = values[73]["new"]
+          values[73] = 1
+          values[74] = 0
+          values[72] = values[72](unpackValues(values, 73, 74))
+          values[71]["CornerRadius"] = values[72]
+          values[72] = environment.Instance
+          values[71] = values[72]["new"]
+          values[72] = "TextLabel"
+          values[71] = values[71](unpackValues(values, 72, 72))
+          values[72] = 1
+          values[71]["BackgroundTransparency"] = values[72]
+          values[73] = environment.UDim2
+          values[72] = values[73]["fromOffset"]
+          values[73] = 12
+          values[74] = 0
+          values[72] = values[72](unpackValues(values, 73, 74))
+          values[103] = 571129.0
+          values[71]["Position"] = values[72]
+          values[73] = environment.UDim2
+          values[72] = values[73]["new"]
+          values[73] = 1
+          values[77] = 12
+          values[74] = -values[77]
+          values[75] = 1
+          values[76] = 0
+          values[72] = values[72](unpackValues(values, 73, 76))
+          values[71]["Size"] = values[72]
+          values[74] = environment.Enum
+          values[73] = values[74]["Font"]
+          values[72] = values[73]["GothamMedium"]
+          values[71]["Font"] = values[72]
+          values[103] = 780365.0
+          values[72] = values[49]
+          if not values[72] then
+          else
+            values[103] = 780365.0
+            values[72] = "Violence District"
+          end
+          values[103] = 221109.0
+          if values[72] then
+          else
+            values[103] = 221109.0
+            values[72] = "Game not supported"
+          end
+          values[103] = 855795.0
+          values[71]["Text"] = values[72]
+          values[72] = values[49]
+          if not values[72] then
+          else
+            values[103] = 855795.0
+            values[73] = environment.Color3
+            values[72] = values[73]["fromRGB"]
+            values[73] = 175
+            values[74] = 175
+            values[75] = 175
+            values[72] = values[72](unpackValues(values, 73, 75))
+          end
+          values[103] = 458695.0
+          if values[72] then
+          else
+            values[103] = 458695.0
+            values[72] = values[23]
+          end
+          values[103] = 642323.0
+          values[71]["TextColor3"] = values[72]
+          values[72] = 10
+          values[71]["TextSize"] = values[72]
+          values[74] = environment.Enum
+          values[73] = values[74]["TextXAlignment"]
+          values[72] = values[73]["Left"]
+          values[71]["TextXAlignment"] = values[72]
+          values[72] = values[69]
+          values[71]["Parent"] = values[72]
+          values[73] = environment.Instance
+          values[72] = values[73]["new"]
+          values[73] = "TextButton"
+          values[103] = 458093.0
+          values[72] = values[72](unpackValues(values, 73, 73))
+          values[74] = environment.UDim2
+          values[73] = values[74]["fromOffset"]
+          values[74] = 32
+          values[75] = 32
+          values[73] = values[73](unpackValues(values, 74, 75))
+          values[72]["Size"] = values[73]
+          values[74] = environment.UDim2
+          values[73] = values[74]["new"]
+          values[74] = 1
+          values[78] = 60
+          values[75] = -values[78]
+          values[76] = 0
+          values[77] = 30
+          values[73] = values[73](unpackValues(values, 74, 77))
+          values[103] = 273347.0
+          values[72]["Position"] = values[73]
+          values[74] = environment.Color3
+          values[73] = values[74]["fromRGB"]
+          values[74] = 32
+          values[75] = 32
+          values[76] = 32
+          values[73] = values[73](unpackValues(values, 74, 76))
+          values[72]["BackgroundColor3"] = values[73]
+          values[73] = 0
+          values[72]["BorderSizePixel"] = values[73]
+          values[103] = 205453.0
+          values[73] = "X"
+          values[72]["Text"] = values[73]
+          values[74] = environment.Color3
+          values[73] = values[74]["fromRGB"]
+          values[74] = 175
+          values[75] = 175
+          values[76] = 175
+          values[73] = values[73](unpackValues(values, 74, 76))
+          values[72]["TextColor3"] = values[73]
+          values[75] = environment.Enum
+          values[103] = 261324.0
+          values[74] = values[75]["Font"]
+          values[73] = values[74]["GothamBold"]
+          values[72]["Font"] = values[73]
+          values[73] = 14
+          values[72]["TextSize"] = values[73]
+          values[73] = false
+          values[72]["AutoButtonColor"] = values[73]
+          values[73] = values[56]
+          values[103] = 719446.0
+          values[72]["Parent"] = values[73]
+          values[74] = environment.Instance
+          values[73] = values[74]["new"]
+          values[74] = "UICorner"
+          values[75] = values[72]
+          values[73] = values[73](unpackValues(values, 74, 75))
+          values[75] = environment.UDim
+          values[74] = values[75]["new"]
+          values[75] = 0
+          values[76] = 10
+          values[74] = values[74](unpackValues(values, 75, 76))
+          values[73]["CornerRadius"] = values[74]
+          values[74] = environment.Instance
+          values[73] = values[74]["new"]
+          values[74] = "UIStroke"
+          values[103] = 741478.0
+          values[75] = values[72]
+          values[73] = values[73](unpackValues(values, 74, 75))
+          values[74] = values[25]
+          values[73]["Color"] = values[74]
+          values[74] = 1
+          values[73]["Thickness"] = values[74]
+          values[76] = environment.Enum
+          values[75] = values[76]["ApplyStrokeMode"]
+          values[103] = 975727.0
+          values[74] = values[75]["Border"]
+          values[73]["ApplyStrokeMode"] = values[74]
+          values[75] = values[72]["MouseEnter"]
+          values[75] = values[75]
+          values[74] = values[75]["Connect"]
+          do
+            local cells = {}
+            cells[0] = {values, 2}
+            cells[1] = {values, 72}
+            cells[2] = {values, 24}
+            cells[3] = {values, 73}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[76] = function(...) return functions["callback_55"](captured, ...) end
+          end
+          values[74](unpackValues(values, 75, 76))
+          values[75] = values[72]["MouseLeave"]
+          values[75] = values[75]
+          values[74] = values[75]["Connect"]
+          do
+            local cells = {}
+            cells[0] = {values, 2}
+            cells[1] = {values, 72}
+            cells[2] = {values, 73}
+            cells[3] = {values, 25}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[76] = function(...) return functions["callback_56"](captured, ...) end
+          end
+          values[74](unpackValues(values, 75, 76))
+          values[103] = 521986.0
+          values[75] = environment.Instance
+          values[74] = values[75]["new"]
+          values[75] = "Frame"
+          values[74] = values[74](unpackValues(values, 75, 75))
+          values[76] = environment.UDim2
+          values[75] = values[76]["new"]
+          values[76] = 1
+          values[80] = 56
+          values[103] = 168778.0
+          values[77] = -values[80]
+          values[78] = 0
+          values[79] = 1
+          values[75] = values[75](unpackValues(values, 76, 79))
+          values[74]["Size"] = values[75]
+          values[76] = environment.UDim2
+          values[75] = values[76]["fromOffset"]
+          values[76] = 28
+          values[77] = 94
+          values[103] = 693642.0
+          values[75] = values[75](unpackValues(values, 76, 77))
+          values[74]["Position"] = values[75]
+          values[75] = values[25]
+          values[74]["BackgroundColor3"] = values[75]
+          values[75] = 0
+          values[74]["BorderSizePixel"] = values[75]
+          values[75] = values[56]
+          values[74]["Parent"] = values[75]
+          values[75] = values[49]
+          values[103] = 357082.0
+          if values[75] then
+          else
+            values[103] = 357082.0
+            values[76] = environment.Instance
+            values[75] = values[76]["new"]
+            values[76] = "Frame"
+            values[75] = values[75](unpackValues(values, 76, 76))
+            values[77] = environment.UDim2
+            values[76] = values[77]["fromOffset"]
+            values[77] = 28
+            values[78] = 106
+            values[103] = 45111.0
+            values[76] = values[76](unpackValues(values, 77, 78))
+            values[75]["Position"] = values[76]
+            values[77] = environment.UDim2
+            values[76] = values[77]["new"]
+            values[77] = 1
+            values[81] = 56
+            values[78] = -values[81]
+            values[79] = 0
+            values[80] = 34
+            values[76] = values[76](unpackValues(values, 77, 80))
+            values[75]["Size"] = values[76]
+            values[103] = 827933.0
+            values[77] = environment.Color3
+            values[76] = values[77]["fromRGB"]
+            values[77] = 38
+            values[78] = 16
+            values[79] = 16
+            values[76] = values[76](unpackValues(values, 77, 79))
+            values[75]["BackgroundColor3"] = values[76]
+            values[76] = 0
+            values[75]["BorderSizePixel"] = values[76]
+            values[76] = values[56]
+            values[75]["Parent"] = values[76]
+            values[77] = environment.Instance
+            values[103] = 936000.0
+            values[76] = values[77]["new"]
+            values[77] = "UICorner"
+            values[78] = values[75]
+            values[76] = values[76](unpackValues(values, 77, 78))
+            values[78] = environment.UDim
+            values[77] = values[78]["new"]
+            values[78] = 0
+            values[79] = 10
+            values[77] = values[77](unpackValues(values, 78, 79))
+            values[76]["CornerRadius"] = values[77]
+            values[77] = environment.Instance
+            values[76] = values[77]["new"]
+            values[77] = "UIStroke"
+            values[78] = values[75]
+            values[76] = values[76](unpackValues(values, 77, 78))
+            values[78] = environment.Color3
+            values[103] = 712264.0
+            values[77] = values[78]["fromRGB"]
+            values[78] = 90
+            values[79] = 30
+            values[80] = 30
+            values[77] = values[77](unpackValues(values, 78, 80))
+            values[76]["Color"] = values[77]
+            values[77] = 1
+            values[76]["Thickness"] = values[77]
+            values[79] = environment.Enum
+            values[78] = values[79]["ApplyStrokeMode"]
+            values[77] = values[78]["Border"]
+            values[76]["ApplyStrokeMode"] = values[77]
+            values[78] = environment.Instance
+            values[77] = values[78]["new"]
+            values[103] = 813365.0
+            values[78] = "TextLabel"
+            values[77] = values[77](unpackValues(values, 78, 78))
+            values[78] = 1
+            values[77]["BackgroundTransparency"] = values[78]
+            values[79] = environment.UDim2
+            values[78] = values[79]["fromScale"]
+            values[79] = 1
+            values[80] = 1
+            values[103] = 876432.0
+            values[78] = values[78](unpackValues(values, 79, 80))
+            values[77]["Size"] = values[78]
+            values[80] = environment.Enum
+            values[79] = values[80]["Font"]
+            values[78] = values[79]["GothamMedium"]
+            values[77]["Font"] = values[78]
+            values[78] = "This script only works in Violence District"
+            values[77]["Text"] = values[78]
+            values[79] = environment.Color3
+            values[78] = values[79]["fromRGB"]
+            values[79] = 255
+            values[80] = 170
+            values[81] = 170
+            values[78] = values[78](unpackValues(values, 79, 81))
+            values[77]["TextColor3"] = values[78]
+            values[78] = 11
+            values[103] = 227656.0
+            values[77]["TextSize"] = values[78]
+            values[78] = values[75]
+            values[77]["Parent"] = values[78]
+          end
+          values[103] = 342154.0
+          values[76] = environment.Instance
+          values[75] = values[76]["new"]
+          values[76] = "TextLabel"
+          values[75] = values[75](unpackValues(values, 76, 76))
+          values[76] = 1
+          values[75]["BackgroundTransparency"] = values[76]
+          values[77] = environment.UDim2
+          values[76] = values[77]["fromOffset"]
+          values[77] = 30
+          values[78] = 108 + values[50]
+          values[76] = values[76](unpackValues(values, 77, 78))
+          values[75]["Position"] = values[76]
+          values[77] = environment.UDim2
+          values[76] = values[77]["new"]
+          values[77] = 1
+          values[103] = 308407.0
+          values[81] = 60
+          values[78] = -values[81]
+          values[79] = 0
+          values[80] = 14
+          values[76] = values[76](unpackValues(values, 77, 80))
+          values[75]["Size"] = values[76]
+          values[78] = environment.Enum
+          values[77] = values[78]["Font"]
+          values[76] = values[77]["GothamBold"]
+          values[75]["Font"] = values[76]
+          values[76] = "ACCESS KEY"
+          values[103] = 558284.0
+          values[75]["Text"] = values[76]
+          values[76] = values[20]
+          values[75]["TextColor3"] = values[76]
+          values[76] = 9
+          values[75]["TextSize"] = values[76]
+          values[78] = environment.Enum
+          values[77] = values[78]["TextXAlignment"]
+          values[76] = values[77]["Left"]
+          values[75]["TextXAlignment"] = values[76]
+          values[76] = values[56]
+          values[75]["Parent"] = values[76]
+          values[103] = 809077.0
+          values[77] = environment.Instance
+          values[76] = values[77]["new"]
+          values[77] = "Frame"
+          values[76] = values[76](unpackValues(values, 77, 77))
+          values[78] = environment.UDim2
+          values[77] = values[78]["fromOffset"]
+          values[78] = 28
+          values[79] = 126 + values[50]
+          values[77] = values[77](unpackValues(values, 78, 79))
+          values[76]["Position"] = values[77]
+          values[78] = environment.UDim2
+          values[77] = values[78]["new"]
+          values[103] = 969666.0
+          values[78] = 1
+          values[82] = 56
+          values[79] = -values[82]
+          values[80] = 0
+          values[81] = 46
+          values[77] = values[77](unpackValues(values, 78, 81))
+          values[76]["Size"] = values[77]
+          values[77] = values[18]
+          values[76]["BackgroundColor3"] = values[77]
+          values[77] = 0
+          values[76]["BorderSizePixel"] = values[77]
+          values[77] = values[56]
+          values[76]["Parent"] = values[77]
+          values[78] = environment.Instance
+          values[77] = values[78]["new"]
+          values[103] = 178280.0
+          values[78] = "UICorner"
+          values[79] = values[76]
+          values[77] = values[77](unpackValues(values, 78, 79))
+          values[79] = environment.UDim
+          values[78] = values[79]["new"]
+          values[79] = 0
+          values[80] = 12
+          values[78] = values[78](unpackValues(values, 79, 80))
+          values[77]["CornerRadius"] = values[78]
+          values[78] = environment.Instance
+          values[77] = values[78]["new"]
+          values[103] = 508180.0
+          values[78] = "UIStroke"
+          values[79] = values[76]
+          values[77] = values[77](unpackValues(values, 78, 79))
+          values[78] = values[25]
+          values[77]["Color"] = values[78]
+          values[78] = 1
+          values[77]["Thickness"] = values[78]
+          values[80] = environment.Enum
+          values[79] = values[80]["ApplyStrokeMode"]
+          values[78] = values[79]["Border"]
+          values[77]["ApplyStrokeMode"] = values[78]
+          values[79] = environment.Instance
+          values[78] = values[79]["new"]
+          values[79] = "TextBox"
+          values[78] = values[78](unpackValues(values, 79, 79))
+          values[103] = 675344.0
+          values[80] = environment.UDim2
+          values[79] = values[80]["new"]
+          values[80] = 1
+          values[84] = 28
+          values[81] = -values[84]
+          values[82] = 1
+          values[83] = 0
+          values[79] = values[79](unpackValues(values, 80, 83))
+          values[78]["Size"] = values[79]
+          values[80] = environment.UDim2
+          values[79] = values[80]["fromOffset"]
+          values[103] = 100105.0
+          values[80] = 14
+          values[81] = 0
+          values[79] = values[79](unpackValues(values, 80, 81))
+          values[78]["Position"] = values[79]
+          values[79] = 1
+          values[78]["BackgroundTransparency"] = values[79]
+          values[79] = false
+          values[78]["ClearTextOnFocus"] = values[79]
+          values[103] = 710704.0
+          values[79] = "Paste your key"
+          values[78]["PlaceholderText"] = values[79]
+          values[79] = values[21]
+          values[78]["PlaceholderColor3"] = values[79]
+          values[79] = values[37]
+          values[79] = values[79](unpackValues(values, 80, 79))
+          if values[79] then
+          else
+            values[103] = 710704.0
+            values[79] = ""
+          end
+          values[103] = 382293.0
+          values[78]["Text"] = values[79]
+          values[79] = values[19]
+          values[78]["TextColor3"] = values[79]
+          values[81] = environment.Enum
+          values[80] = values[81]["Font"]
+          values[79] = values[80]["Code"]
+          values[78]["Font"] = values[79]
+          values[79] = 13
+          values[78]["TextSize"] = values[79]
+          values[81] = environment.Enum
+          values[80] = values[81]["TextXAlignment"]
+          values[103] = 165860.0
+          values[79] = values[80]["Left"]
+          values[78]["TextXAlignment"] = values[79]
+          values[81] = environment.Enum
+          values[80] = values[81]["TextTruncate"]
+          values[79] = values[80]["AtEnd"]
+          values[78]["TextTruncate"] = values[79]
+          values[79] = values[76]
+          values[78]["Parent"] = values[79]
+          values[103] = 325019.0
+          values[80] = values[78]["Focused"]
+          values[80] = values[80]
+          values[79] = values[80]["Connect"]
+          do
+            local cells = {}
+            cells[0] = {values, 2}
+            cells[1] = {values, 77}
+            cells[2] = {values, 24}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[81] = function(...) return functions["callback_57"](captured, ...) end
+          end
+          values[79](unpackValues(values, 80, 81))
+          values[80] = values[78]["FocusLost"]
+          values[80] = values[80]
+          values[79] = values[80]["Connect"]
+          do
+            local cells = {}
+            cells[0] = {values, 2}
+            cells[1] = {values, 77}
+            cells[2] = {values, 25}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[81] = function(...) return functions["callback_58"](captured, ...) end
+          end
+          values[79](unpackValues(values, 80, 81))
+          values[103] = 1033000.0
+          values[80] = environment.Instance
+          values[79] = values[80]["new"]
+          values[80] = "Frame"
+          values[79] = values[79](unpackValues(values, 80, 80))
+          values[81] = environment.UDim2
+          values[80] = values[81]["fromOffset"]
+          values[81] = 28
+          values[82] = 186 + values[50]
+          values[103] = 358352.0
+          values[80] = values[80](unpackValues(values, 81, 82))
+          values[79]["Position"] = values[80]
+          values[81] = environment.UDim2
+          values[80] = values[81]["new"]
+          values[81] = 1
+          values[85] = 56
+          values[82] = -values[85]
+          values[83] = 0
+          values[84] = 42
+          values[80] = values[80](unpackValues(values, 81, 84))
+          values[103] = 823199.0
+          values[79]["Size"] = values[80]
+          values[80] = 1
+          values[79]["BackgroundTransparency"] = values[80]
+          values[80] = values[56]
+          values[79]["Parent"] = values[80]
+          values[81] = environment.Instance
+          values[80] = values[81]["new"]
+          values[81] = "UIListLayout"
+          values[82] = values[79]
+          values[80] = values[80](unpackValues(values, 81, 82))
+          values[83] = environment.Enum
+          values[82] = values[83]["FillDirection"]
+          values[81] = values[82]["Horizontal"]
+          values[80]["FillDirection"] = values[81]
+          values[103] = 909043.0
+          values[82] = environment.UDim
+          values[81] = values[82]["new"]
+          values[82] = 0
+          values[83] = 8
+          values[81] = values[81](unpackValues(values, 82, 83))
+          values[80]["Padding"] = values[81]
+          values[83] = environment.Enum
+          values[82] = values[83]["HorizontalAlignment"]
+          values[81] = values[82]["Center"]
+          values[80]["HorizontalAlignment"] = values[81]
+          do
+            local cells = {}
+            cells[0] = {values, 2}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[81] = function(...) return functions["callback_59"](captured, ...) end
+          end
+          values[103] = 364490.0
+          values[83] = environment.Instance
+          values[82] = values[83]["new"]
+          values[83] = "TextButton"
+          values[82] = values[82](unpackValues(values, 83, 83))
+          values[84] = environment.UDim2
+          values[83] = values[84]["new"]
+          values[84] = 0.5
+          values[88] = 4
+          values[85] = -values[88]
+          values[86] = 1
+          values[103] = 772591.0
+          values[87] = 0
+          values[83] = values[83](unpackValues(values, 84, 87))
+          values[82]["Size"] = values[83]
+          values[83] = values[24]
+          values[82]["BackgroundColor3"] = values[83]
+          values[83] = 0
+          values[82]["BorderSizePixel"] = values[83]
+          values[83] = "GET FREE KEY"
+          values[82]["Text"] = values[83]
+          values[84] = environment.Color3
+          values[83] = values[84]["fromRGB"]
+          values[84] = 10
+          values[85] = 10
+          values[86] = 10
+          values[83] = values[83](unpackValues(values, 84, 86))
+          values[82]["TextColor3"] = values[83]
+          values[103] = 411674.0
+          values[85] = environment.Enum
+          values[84] = values[85]["Font"]
+          values[83] = values[84]["GothamBold"]
+          values[82]["Font"] = values[83]
+          values[83] = 11
+          values[82]["TextSize"] = values[83]
+          values[83] = false
+          values[82]["AutoButtonColor"] = values[83]
+          values[83] = values[79]
+          values[82]["Parent"] = values[83]
+          values[84] = environment.Instance
+          values[103] = 7309.0
+          values[83] = values[84]["new"]
+          values[84] = "UICorner"
+          values[85] = values[82]
+          values[83] = values[83](unpackValues(values, 84, 85))
+          values[85] = environment.UDim
+          values[84] = values[85]["new"]
+          values[85] = 0
+          values[86] = 12
+          values[103] = 634896.0
+          values[84] = values[84](unpackValues(values, 85, 86))
+          values[83]["CornerRadius"] = values[84]
+          values[83] = values[81]
+          values[84] = values[82]
+          values[83](unpackValues(values, 84, 84))
+          values[84] = environment.Instance
+          values[83] = values[84]["new"]
+          values[84] = "TextButton"
+          values[83] = values[83](unpackValues(values, 84, 84))
+          values[103] = 535003.0
+          values[85] = environment.UDim2
+          values[84] = values[85]["new"]
+          values[85] = 0.5
+          values[89] = 4
+          values[86] = -values[89]
+          values[87] = 1
+          values[88] = 0
+          values[84] = values[84](unpackValues(values, 85, 88))
+          values[83]["Size"] = values[84]
+          values[85] = environment.Color3
+          values[84] = values[85]["fromRGB"]
+          values[85] = 32
+          values[86] = 32
+          values[87] = 32
+          values[84] = values[84](unpackValues(values, 85, 87))
+          values[103] = 790286.0
+          values[83]["BackgroundColor3"] = values[84]
+          values[84] = 0
+          values[83]["BorderSizePixel"] = values[84]
+          values[84] = "UNLOCK"
+          values[83]["Text"] = values[84]
+          values[84] = values[19]
+          values[83]["TextColor3"] = values[84]
+          values[86] = environment.Enum
+          values[103] = 70703.0
+          values[85] = values[86]["Font"]
+          values[84] = values[85]["GothamBold"]
+          values[83]["Font"] = values[84]
+          values[84] = 11
+          values[83]["TextSize"] = values[84]
+          values[84] = false
+          values[83]["AutoButtonColor"] = values[84]
+          values[84] = values[79]
+          values[83]["Parent"] = values[84]
+          values[85] = environment.Instance
+          values[84] = values[85]["new"]
+          values[103] = 424459.0
+          values[85] = "UICorner"
+          values[86] = values[83]
+          values[84] = values[84](unpackValues(values, 85, 86))
+          values[86] = environment.UDim
+          values[85] = values[86]["new"]
+          values[86] = 0
+          values[87] = 12
+          values[85] = values[85](unpackValues(values, 86, 87))
+          values[103] = 364475.0
+          values[84]["CornerRadius"] = values[85]
+          values[85] = environment.Instance
+          values[84] = values[85]["new"]
+          values[85] = "UIStroke"
+          values[86] = values[83]
+          values[84] = values[84](unpackValues(values, 85, 86))
+          values[85] = values[25]
+          values[84]["Color"] = values[85]
+          values[85] = 1
+          values[84]["Thickness"] = values[85]
+          values[87] = environment.Enum
+          values[103] = 746043.0
+          values[86] = values[87]["ApplyStrokeMode"]
+          values[85] = values[86]["Border"]
+          values[84]["ApplyStrokeMode"] = values[85]
+          values[85] = values[81]
+          values[86] = values[83]
+          values[85](unpackValues(values, 86, 86))
+          values[86] = environment.Instance
+          values[85] = values[86]["new"]
+          values[86] = "Frame"
+          values[85] = values[85](unpackValues(values, 86, 86))
+          values[87] = environment.UDim2
+          values[86] = values[87]["fromOffset"]
+          values[87] = 28
+          values[88] = 242 + values[50]
+          values[86] = values[86](unpackValues(values, 87, 88))
+          values[103] = 835025.0
+          values[85]["Position"] = values[86]
+          values[87] = environment.UDim2
+          values[86] = values[87]["new"]
+          values[87] = 1
+          values[91] = 56
+          values[88] = -values[91]
+          values[89] = 0
+          values[90] = 36
+          values[86] = values[86](unpackValues(values, 87, 90))
+          values[103] = 764245.0
+          values[85]["Size"] = values[86]
+          values[86] = values[18]
+          values[85]["BackgroundColor3"] = values[86]
+          values[86] = 0
+          values[85]["BorderSizePixel"] = values[86]
+          values[86] = values[56]
+          values[85]["Parent"] = values[86]
+          values[87] = environment.Instance
+          values[86] = values[87]["new"]
+          values[87] = "UICorner"
+          values[88] = values[85]
+          values[86] = values[86](unpackValues(values, 87, 88))
+          values[88] = environment.UDim
+          values[87] = values[88]["new"]
+          values[88] = 0
+          values[89] = 10
+          values[103] = 112835.0
+          values[87] = values[87](unpackValues(values, 88, 89))
+          values[86]["CornerRadius"] = values[87]
+          values[87] = environment.Instance
+          values[86] = values[87]["new"]
+          values[87] = "UIStroke"
+          values[88] = values[85]
+          values[86] = values[86](unpackValues(values, 87, 88))
+          values[87] = values[25]
+          values[86]["Color"] = values[87]
+          values[87] = 1
+          values[103] = 423649.0
+          values[86]["Thickness"] = values[87]
+          values[89] = environment.Enum
+          values[88] = values[89]["ApplyStrokeMode"]
+          values[87] = values[88]["Border"]
+          values[86]["ApplyStrokeMode"] = values[87]
+          values[88] = environment.Instance
+          values[87] = values[88]["new"]
+          values[88] = "Frame"
+          values[87] = values[87](unpackValues(values, 88, 88))
+          values[103] = 177560.0
+          values[89] = environment.UDim2
+          values[88] = values[89]["fromOffset"]
+          values[89] = 6
+          values[90] = 6
+          values[88] = values[88](unpackValues(values, 89, 90))
+          values[87]["Size"] = values[88]
+          values[89] = environment.UDim2
+          values[88] = values[89]["fromOffset"]
+          values[89] = 14
+          values[90] = 15
+          values[88] = values[88](unpackValues(values, 89, 90))
+          values[87]["Position"] = values[88]
+          values[88] = values[21]
+          values[87]["BackgroundColor3"] = values[88]
+          values[88] = 0
+          values[103] = 779825.0
+          values[87]["BorderSizePixel"] = values[88]
+          values[88] = values[85]
+          values[87]["Parent"] = values[88]
+          values[89] = environment.Instance
+          values[88] = values[89]["new"]
+          values[89] = "UICorner"
+          values[90] = values[87]
+          values[88] = values[88](unpackValues(values, 89, 90))
+          values[90] = environment.UDim
+          values[89] = values[90]["new"]
+          values[90] = 1
+          values[91] = 0
+          values[89] = values[89](unpackValues(values, 90, 91))
+          values[88]["CornerRadius"] = values[89]
+          values[89] = environment.Instance
+          values[103] = 1046794.0
+          values[88] = values[89]["new"]
+          values[89] = "TextLabel"
+          values[88] = values[88](unpackValues(values, 89, 89))
+          values[89] = 1
+          values[88]["BackgroundTransparency"] = values[89]
+          values[90] = environment.UDim2
+          values[89] = values[90]["fromOffset"]
+          values[90] = 28
+          values[91] = 0
+          values[89] = values[89](unpackValues(values, 90, 91))
+          values[88]["Position"] = values[89]
+          values[103] = 82684.0
+          values[90] = environment.UDim2
+          values[89] = values[90]["new"]
+          values[90] = 1
+          values[94] = 40
+          values[91] = -values[94]
+          values[92] = 1
+          values[93] = 0
+          values[89] = values[89](unpackValues(values, 90, 93))
+          values[103] = 357277.0
+          values[88]["Size"] = values[89]
+          values[91] = environment.Enum
+          values[90] = values[91]["Font"]
+          values[89] = values[90]["Code"]
+          values[88]["Font"] = values[89]
+          values[89] = "No active key"
+          values[88]["Text"] = values[89]
+          values[89] = values[21]
+          values[88]["TextColor3"] = values[89]
+          values[89] = 12
+          values[88]["TextSize"] = values[89]
+          values[91] = environment.Enum
+          values[90] = values[91]["TextXAlignment"]
+          values[89] = values[90]["Left"]
+          values[88]["TextXAlignment"] = values[89]
+          values[89] = values[85]
+          values[103] = 620493.0
+          values[88]["Parent"] = values[89]
+          values[90] = environment.Instance
+          values[89] = values[90]["new"]
+          values[90] = "TextLabel"
+          values[89] = values[89](unpackValues(values, 90, 90))
+          values[90] = 1
+          values[89]["BackgroundTransparency"] = values[90]
+          values[91] = environment.UDim2
+          values[90] = values[91]["new"]
+          values[91] = 0
+          values[103] = 508057.0
+          values[92] = 28
+          values[93] = 1
+          values[95] = 46
+          values[94] = -values[95]
+          values[90] = values[90](unpackValues(values, 91, 94))
+          values[89]["Position"] = values[90]
+          values[91] = environment.UDim2
+          values[90] = values[91]["new"]
+          values[103] = 247217.0
+          values[91] = 1
+          values[95] = 56
+          values[92] = -values[95]
+          values[93] = 0
+          values[94] = 18
+          values[90] = values[90](unpackValues(values, 91, 94))
+          values[89]["Size"] = values[90]
+          values[92] = environment.Enum
+          values[91] = values[92]["Font"]
+          values[90] = values[91]["GothamMedium"]
+          values[89]["Font"] = values[90]
+          values[103] = 802171.0
+          values[90] = values[49]
+          if not values[90] then
+          else
+            values[103] = 802171.0
+            values[90] = "Keys are shared"
+          end
+          values[103] = 26759.0
+          if values[90] then
+          else
+            values[103] = 26759.0
+            values[90] = "Open Violence District to unlock"
+          end
+          values[103] = 508575.0
+          values[89]["Text"] = values[90]
+          values[90] = values[20]
+          values[89]["TextColor3"] = values[90]
+          values[90] = 10
+          values[89]["TextSize"] = values[90]
+          values[92] = environment.Enum
+          values[91] = values[92]["TextXAlignment"]
+          values[90] = values[91]["Center"]
+          values[89]["TextXAlignment"] = values[90]
+          values[90] = values[56]
+          values[89]["Parent"] = values[90]
+          values[91] = environment.Instance
+          values[90] = values[91]["new"]
+          values[91] = "TextLabel"
+          values[90] = values[90](unpackValues(values, 91, 91))
+          values[103] = 60040.0
+          values[91] = 1
+          values[90]["BackgroundTransparency"] = values[91]
+          values[92] = environment.UDim2
+          values[91] = values[92]["new"]
+          values[92] = 0
+          values[93] = 28
+          values[94] = 1
+          values[96] = 24
+          values[95] = -values[96]
+          values[103] = 577688.0
+          values[91] = values[91](unpackValues(values, 92, 95))
+          values[90]["Position"] = values[91]
+          values[92] = environment.UDim2
+          values[91] = values[92]["new"]
+          values[92] = 1
+          values[96] = 56
+          values[93] = -values[96]
+          values[94] = 0
+          values[103] = 973419.0
+          values[95] = 16
+          values[91] = values[91](unpackValues(values, 92, 95))
+          values[90]["Size"] = values[91]
+          values[93] = environment.Enum
+          values[92] = values[93]["Font"]
+          values[91] = values[92]["Code"]
+          values[90]["Font"] = values[91]
+          values[91] = "KINON HUB"
+          values[90]["Text"] = values[91]
+          values[91] = values[21]
+          values[90]["TextColor3"] = values[91]
+          values[91] = 9
+          values[90]["TextSize"] = values[91]
+          values[103] = 156679.0
+          values[93] = environment.Enum
+          values[92] = values[93]["TextXAlignment"]
+          values[91] = values[92]["Center"]
+          values[90]["TextXAlignment"] = values[91]
+          values[91] = values[56]
+          values[90]["Parent"] = values[91]
+          do
+            local cells = {}
+            cells[0] = {values, 2}
+            cells[1] = {values, 59}
+            cells[2] = {values, 55}
+            cells[3] = {values, 53}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[91] = function(...) return functions["callback_62"](captured, ...) end
+          end
+          do
+            local cells = {}
+            cells[0] = {values, 29}
+            cells[1] = {values, 78}
+            cells[2] = {values, 27}
+            cells[3] = {values, 33}
+            cells[4] = {values, 38}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[92] = function(...) return functions["callback_64"](captured, ...) end
+          end
+          values[93] = environment.pcall
+          do
+            local cells = {}
+            cells[0] = {values, 92}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[94] = function(...) return functions["callback_65"](captured, ...) end
+          end
+          values[93](unpackValues(values, 94, 94))
+          values[93] = environment.pcall
+          values[103] = 365507.0
+          do
+            local cells = {}
+            cells[0] = {values, 5}
+            cells[1] = {values, 92}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[94] = function(...) return functions["callback_67"](captured, ...) end
+          end
+          values[93](unpackValues(values, 94, 94))
+          do
+            local cells = {}
+            cells[0] = {values, 89}
+            cells[1] = {values, 22}
+            cells[2] = {values, 23}
+            cells[3] = {values, 20}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[93] = function(...) return functions["callback_69"](captured, ...) end
+          end
+          do
+            local cells = {}
+            cells[0] = {values, 39}
+            cells[1] = {values, 88}
+            cells[2] = {values, 31}
+            cells[3] = {values, 22}
+            cells[4] = {values, 87}
+            cells[5] = {values, 36}
+            cells[6] = {values, 30}
+            cells[7] = {values, 21}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[94] = function(...) return functions["callback_70"](captured, ...) end
+          end
+          do
+            local cells = {}
+            cells[0] = {values, 42}
+            cells[1] = {values, 43}
+            cells[2] = {values, 39}
+            cells[3] = {values, 82}
+            cells[4] = {values, 31}
+            cells[5] = {values, 21}
+            cells[6] = {values, 24}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[95] = function(...) return functions["callback_71"](captured, ...) end
+          end
+          values[97] = environment.task
+          values[96] = values[97]["spawn"]
+          do
+            local cells = {}
+            cells[0] = {values, 53}
+            cells[1] = {values, 94}
+            cells[2] = {values, 95}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[97] = function(...) return functions["callback_72"](captured, ...) end
+          end
+          values[96](unpackValues(values, 97, 97))
+          values[96] = false
+          do
+            local cells = {}
+            cells[0] = {values, 96}
+            cells[1] = {values, 38}
+            cells[2] = {values, 83}
+            cells[3] = {values, 22}
+            cells[4] = {values, 2}
+            cells[5] = {values, 84}
+            cells[6] = {values, 93}
+            cells[7] = {values, 34}
+            cells[8] = {values, 94}
+            cells[9] = {values, 32}
+            cells[10] = {values, 19}
+            cells[11] = {values, 25}
+            cells[12] = {values, 8}
+            cells[13] = {values, 91}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[97] = function(...) return functions["callback_73"](captured, ...) end
+          end
+          values[98] = false
+          values[103] = 193014.0
+          values[100] = values[82]["MouseButton1Click"]
+          values[100] = values[100]
+          values[99] = values[100]["Connect"]
+          do
+            local cells = {}
+            cells[0] = {values, 98}
+            cells[1] = {values, 43}
+            cells[2] = {values, 34}
+            cells[3] = {values, 42}
+            cells[4] = {values, 82}
+            cells[5] = {values, 33}
+            cells[6] = {values, 27}
+            cells[7] = {values, 78}
+            cells[8] = {values, 41}
+            cells[9] = {values, 38}
+            cells[10] = {values, 93}
+            cells[11] = {values, 95}
+            cells[12] = {values, 94}
+            cells[13] = {values, 97}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[101] = function(...) return functions["callback_76"](captured, ...) end
+          end
+          values[99](unpackValues(values, 100, 101))
+          values[100] = values[83]["MouseButton1Click"]
+          values[100] = values[100]
+          values[99] = values[100]["Connect"]
+          do
+            local cells = {}
+            cells[0] = {values, 98}
+            cells[1] = {values, 83}
+            cells[2] = {values, 93}
+            cells[3] = {values, 37}
+            cells[4] = {values, 29}
+            cells[5] = {values, 78}
+            cells[6] = {values, 39}
+            cells[7] = {values, 97}
+            cells[8] = {values, 27}
+            cells[9] = {values, 33}
+            cells[10] = {values, 38}
+            cells[11] = {values, 34}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[101] = function(...) return functions["callback_78"](captured, ...) end
+          end
+          values[99](unpackValues(values, 100, 101))
+          values[100] = values[72]["MouseButton1Click"]
+          values[103] = 446243.0
+          values[100] = values[100]
+          values[99] = values[100]["Connect"]
+          do
+            local cells = {}
+            cells[0] = {values, 92}
+            cells[1] = {values, 91}
+            local captured = setmetatable({}, captureMetatable)
+            rawset(captured, false, cells)
+            captureGroups[#captureGroups + 1] = cells
+            values[101] = function(...) return functions["callback_80"](captured, ...) end
+          end
+          values[99](unpackValues(values, 100, 101))
+          closeCapturedValues(captureGroups, values, 0)
+          return
+        else
+          values[103] = 973885
+          values[45] = values[32]
+          values[45] = values[45](unpackValues(values, 46, 45))
+          if not values[45] then
+            values[103] = 382112
+            do
+              local cells = {}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[44] = function(...) return functions["extractAssetId"](captured, ...) end
+            end
+            do
+              local cells = {}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[45] = function(...) return functions["callback_41"](captured, ...) end
+            end
+            do
+              local cells = {}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[46] = function(...) return functions["callback_43"](captured, ...) end
+            end
+            do
+              local cells = {}
+              cells[0] = {values, 26}
+              cells[1] = {values, 44}
+              cells[2] = {values, 45}
+              cells[3] = {values, 46}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[47] = function(...) return functions["callback_47"](captured, ...) end
+            end
+            for index = 48, 48 do values[index] = nil end
+            values[49] = environment.pcall
+            do
+              local cells = {}
+              cells[0] = {values, 48}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[50] = function(...) return functions["callback_49"](captured, ...) end
+            end
+            values[49](unpackValues(values, 50, 50))
+            values[49] = values[48]
+            if values[49] then
+            else
+              values[103] = 382112
+              values[50] = values[5]
+              values[49] = values[50]["WaitForChild"]
+              values[103] = 837070
+              values[51] = "PlayerGui"
+              values[49] = values[49](unpackValues(values, 50, 51))
+            end
+            values[103] = 499121
+            values[48] = values[49]
+            values[49] = environment.ipairs
+            values[50] = {}
+            values[51] = values[48]
+            values[53] = values[5]
+            values[52] = values[53]["WaitForChild"]
+            values[54] = "PlayerGui"
+            local results = packValues(values[52](unpackValues(values, 53, 54)))
+            registerTop = 52 + results.n - 1
+            for index = 52, registerTop do values[index] = results[index - 52 + 1] end
+            for index = 1, registerTop - 50 do values[50][0 + index] = values[50 + index] end
+            values[49], values[50], values[51] = values[49](unpackValues(values, 50, 50))
+            values[103] = 499121.0
+            if type(values[49]) ~= "function" then
+              local source = values[49]
+              if type(source) == "table" and getmetatable(source) == nil then
+                values[49], values[50], values[51] = next, source, nil
+              else
+                values[49] = coroutine.wrap(function() for key, value in source do coroutine.yield(key, value) end end)
+                values[50], values[51] = nil, nil
+              end
+            end
+            do
+              local leaveLoop277 = 0
+              while true do
+                values[103] = 441130.0
+                local results = packValues(values[49](values[50], values[51]))
+                for index = 1, 2 do values[51 + index] = results[index] end
+                if values[52] ~= nil then
+                  values[51] = values[52]
+                  do
+                    local leaveLoop279 = 0
+                    while true do
+                      values[103] = 973365.0
+                      values[55] = values[53]
+                      values[54] = values[55]["FindFirstChild"]
+                      values[56] = "KinonKeySystem"
+                      values[54] = values[54](unpackValues(values, 55, 56))
+                      values[55] = values[54]
+                      if not values[55] then
+                        leaveLoop279 = 277
+                        break
+                      else
+                        values[103] = 973365.0
+                        values[56] = values[54]
+                        values[55] = values[56]["Destroy"]
+                        values[55](unpackValues(values, 56, 56))
+                        local results = packValues(values[49](values[50], values[51]))
+                        for index = 1, 2 do values[51 + index] = results[index] end
+                        if values[52] ~= nil then
+                          values[51] = values[52]
+                          continue
+                        end
+                      end
+                      leaveLoop279 = 280
+                      break
+                    end
+                    if leaveLoop279 == 277 then
+                      continue
+                    elseif leaveLoop279 == 280 then
+                    end
+                  end
+                end
+                leaveLoop277 = 280
+                break
+              end
+            end
+            values[103] = 267653.0
+            values[49] = values[32]
+            values[49] = values[49](unpackValues(values, 50, 49))
+            values[50] = values[49]
+            if not values[50] then
+            else
+              values[103] = 267653.0
+              values[50] = 0
+            end
+            values[103] = 2062.0
+            if values[50] then
+            else
+              values[103] = 2062.0
+              values[50] = 46
+            end
+            values[103] = 871382.0
+            values[51] = 400
+            values[52] = 330 + values[50]
+            values[54] = environment.Instance
+            values[53] = values[54]["new"]
+            values[54] = "ScreenGui"
+            values[53] = values[53](unpackValues(values, 54, 54))
+            values[54] = "KinonKeySystem"
+            values[53]["Name"] = values[54]
+            values[54] = false
+            values[53]["ResetOnSpawn"] = values[54]
+            values[54] = true
+            values[53]["IgnoreGuiInset"] = values[54]
+            values[54] = 10000
+            values[53]["DisplayOrder"] = values[54]
+            values[54] = environment.pcall
+            do
+              local cells = {}
+              cells[0] = {values, 53}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[55] = function(...) return functions["callback_50"](captured, ...) end
+            end
+            values[103] = 437287.0
+            values[54](unpackValues(values, 55, 55))
+            values[54] = values[48]
+            values[53]["Parent"] = values[54]
+            values[54] = {}
+            values[56] = values[53]["Destroying"]
+            values[56] = values[56]
+            values[55] = values[56]["Connect"]
+            do
+              local cells = {}
+              cells[0] = {values, 54}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[57] = function(...) return functions["callback_51"](captured, ...) end
+            end
+            values[55](unpackValues(values, 56, 57))
+            values[103] = 766321.0
+            values[56] = environment.Instance
+            values[55] = values[56]["new"]
+            values[56] = "Frame"
+            values[55] = values[55](unpackValues(values, 56, 56))
+            values[57] = environment.UDim2
+            values[56] = values[57]["fromScale"]
+            values[57] = 1
+            values[58] = 1
+            values[56] = values[56](unpackValues(values, 57, 58))
+            values[103] = 837025.0
+            values[55]["Size"] = values[56]
+            values[57] = environment.Color3
+            values[56] = values[57]["new"]
+            values[57] = 0
+            values[58] = 0
+            values[59] = 0
+            values[56] = values[56](unpackValues(values, 57, 59))
+            values[55]["BackgroundColor3"] = values[56]
+            values[56] = 1
+            values[55]["BackgroundTransparency"] = values[56]
+            values[56] = 0
+            values[103] = 96878.0
+            values[55]["BorderSizePixel"] = values[56]
+            values[56] = true
+            values[55]["Active"] = values[56]
+            values[56] = values[53]
+            values[55]["Parent"] = values[56]
+            values[58] = values[2]
+            values[57] = values[58]["Create"]
+            values[59] = values[55]
+            values[62] = environment.TweenInfo
+            values[60] = values[62]["new"]
+            values[61] = 0.3
+            values[64] = environment.Enum
+            values[103] = 424114.0
+            values[63] = values[64]["EasingStyle"]
+            values[62] = values[63]["Quad"]
+            values[60] = values[60](unpackValues(values, 61, 62))
+            values[61] = {}
+            values[62] = 0.5
+            values[61]["BackgroundTransparency"] = values[62]
+            values[57] = values[57](unpackValues(values, 58, 61))
+            values[57] = values[57]
+            values[56] = values[57]["Play"]
+            values[56](unpackValues(values, 57, 57))
+            values[57] = environment.Instance
+            values[56] = values[57]["new"]
+            values[57] = "Frame"
+            values[56] = values[56](unpackValues(values, 57, 57))
+            values[57] = "KeyPanel"
+            values[56]["Name"] = values[57]
+            values[103] = 823574.0
+            values[58] = environment.Vector2
+            values[57] = values[58]["new"]
+            values[58] = 0.5
+            values[59] = 0.5
+            values[57] = values[57](unpackValues(values, 58, 59))
+            values[56]["AnchorPoint"] = values[57]
+            values[58] = environment.UDim2
+            values[57] = values[58]["fromScale"]
+            values[58] = 0.5
+            values[59] = 0.5
+            values[57] = values[57](unpackValues(values, 58, 59))
+            values[56]["Position"] = values[57]
+            values[58] = environment.UDim2
+            values[103] = 549479.0
+            values[57] = values[58]["fromOffset"]
+            values[58] = values[51]
+            values[59] = values[52]
+            values[57] = values[57](unpackValues(values, 58, 59))
+            values[56]["Size"] = values[57]
+            values[57] = values[16]
+            values[56]["BackgroundColor3"] = values[57]
+            values[57] = 0
+            values[56]["BorderSizePixel"] = values[57]
+            values[57] = true
+            values[103] = 139371.0
+            values[56]["ClipsDescendants"] = values[57]
+            values[57] = values[55]
+            values[56]["Parent"] = values[57]
+            values[58] = environment.Instance
+            values[57] = values[58]["new"]
+            values[58] = "UICorner"
+            values[59] = values[56]
+            values[57] = values[57](unpackValues(values, 58, 59))
+            values[59] = environment.UDim
+            values[58] = values[59]["new"]
+            values[59] = 0
+            values[60] = 22
+            values[103] = 812291.0
+            values[58] = values[58](unpackValues(values, 59, 60))
+            values[57]["CornerRadius"] = values[58]
+            values[58] = environment.Instance
+            values[57] = values[58]["new"]
+            values[58] = "UIGradient"
+            values[59] = values[56]
+            values[57] = values[57](unpackValues(values, 58, 59))
+            values[59] = environment.ColorSequence
+            values[103] = 443664.0
+            values[58] = values[59]["new"]
+            values[59] = {}
+            values[61] = environment.ColorSequenceKeypoint
+            values[60] = values[61]["new"]
+            values[61] = 0
+            values[62] = values[16]
+            values[60] = values[60](unpackValues(values, 61, 62))
+            values[62] = environment.ColorSequenceKeypoint
+            values[61] = values[62]["new"]
+            values[62] = 1
+            values[63] = values[15]
+            values[103] = 482337.0
+            local results = packValues(values[61](unpackValues(values, 62, 63)))
+            registerTop = 61 + results.n - 1
+            for index = 61, registerTop do values[index] = results[index - 61 + 1] end
+            for index = 1, registerTop - 59 do values[59][0 + index] = values[59 + index] end
+            values[103] = 482337
+            values[103] = 482337.0
+            values[58] = values[58](unpackValues(values, 59, 59))
+            values[57]["Color"] = values[58]
+            values[58] = 135
+            values[57]["Rotation"] = values[58]
+            values[59] = environment.Instance
+            values[58] = values[59]["new"]
+            values[59] = "UIStroke"
+            values[103] = 675808.0
+            values[60] = values[56]
+            values[58] = values[58](unpackValues(values, 59, 60))
+            values[60] = environment.Color3
+            values[59] = values[60]["fromRGB"]
+            values[60] = 60
+            values[61] = 60
+            values[62] = 60
+            values[59] = values[59](unpackValues(values, 60, 62))
+            values[58]["Color"] = values[59]
+            values[59] = 1
+            values[58]["Thickness"] = values[59]
+            values[61] = environment.Enum
+            values[60] = values[61]["ApplyStrokeMode"]
+            values[103] = 695177.0
+            values[59] = values[60]["Border"]
+            values[58]["ApplyStrokeMode"] = values[59]
+            values[60] = environment.Instance
+            values[59] = values[60]["new"]
+            values[60] = "UIScale"
+            values[61] = values[56]
+            values[59] = values[59](unpackValues(values, 60, 61))
+            values[60] = 0.7
+            values[59]["Scale"] = values[60]
+            values[60] = 1
+            values[62] = environment.workspace
+            values[61] = values[62]["CurrentCamera"]
+            do
+              local cells = {}
+              cells[0] = {values, 61}
+              cells[1] = {values, 51}
+              cells[2] = {values, 52}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[62] = function(...) return functions["callback_53"](captured, ...) end
+            end
+            values[63] = values[62]
+            values[103] = 892242.0
+            values[63] = values[63](unpackValues(values, 64, 63))
+            values[60] = values[63]
+            values[65] = values[2]
+            values[64] = values[65]["Create"]
+            values[66] = values[59]
+            values[69] = environment.TweenInfo
+            values[67] = values[69]["new"]
+            values[68] = 0.35
+            values[72] = environment.Enum
+            values[71] = values[72]["EasingStyle"]
+            values[69] = values[71]["Back"]
+            values[72] = environment.Enum
+            values[71] = values[72]["EasingDirection"]
+            values[70] = values[71]["Out"]
+            values[67] = values[67](unpackValues(values, 68, 70))
+            values[68] = {}
+            values[103] = 28910.0
+            values[69] = values[60]
+            values[68]["Scale"] = values[69]
+            values[64] = values[64](unpackValues(values, 65, 68))
+            values[64] = values[64]
+            values[63] = values[64]["Play"]
+            values[63](unpackValues(values, 64, 64))
+            values[63] = values[61]
+            if not values[63] then
+            else
+              values[103] = 28910.0
+              values[65] = values[54]
+              values[64] = #values[65]
+              values[63] = values[64] + 1
+              values[66] = values[61]
+              values[65] = values[66]["GetPropertyChangedSignal"]
+              values[67] = "ViewportSize"
+              values[65] = values[65](unpackValues(values, 66, 67))
+              values[65] = values[65]
+              values[64] = values[65]["Connect"]
+              do
+                local cells = {}
+                cells[0] = {values, 62}
+                cells[1] = {values, 60}
+                cells[2] = {values, 59}
+                local captured = setmetatable({}, captureMetatable)
+                rawset(captured, false, cells)
+                captureGroups[#captureGroups + 1] = cells
+                values[66] = function(...) return functions["callback_54"](captured, ...) end
+              end
+              values[64] = values[64](unpackValues(values, 65, 66))
+              values[103] = 12396.0
+              values[54][values[63]] = values[64]
+            end
+            values[103] = 758159.0
+            values[64] = environment.Instance
+            values[63] = values[64]["new"]
+            values[64] = "Frame"
+            values[63] = values[63](unpackValues(values, 64, 64))
+            values[65] = environment.UDim2
+            values[64] = values[65]["new"]
+            values[65] = 1
+            values[69] = 112
+            values[66] = -values[69]
+            values[67] = 0
+            values[68] = 58
+            values[64] = values[64](unpackValues(values, 65, 68))
+            values[63]["Size"] = values[64]
+            values[103] = 393573.0
+            values[65] = environment.UDim2
+            values[64] = values[65]["fromOffset"]
+            values[65] = 28
+            values[66] = 22
+            values[64] = values[64](unpackValues(values, 65, 66))
+            values[63]["Position"] = values[64]
+            values[64] = 1
+            values[63]["BackgroundTransparency"] = values[64]
+            values[64] = true
+            values[63]["Active"] = values[64]
+            values[64] = values[56]
+            values[63]["Parent"] = values[64]
+            values[103] = 1032141.0
+            values[65] = environment.Instance
+            values[64] = values[65]["new"]
+            values[65] = "Frame"
+            values[64] = values[64](unpackValues(values, 65, 65))
+            values[66] = environment.UDim2
+            values[65] = values[66]["fromOffset"]
+            values[66] = 42
+            values[67] = 42
+            values[65] = values[65](unpackValues(values, 66, 67))
+            values[64]["Size"] = values[65]
+            values[66] = environment.UDim2
+            values[65] = values[66]["fromOffset"]
+            values[66] = 0
+            values[67] = 8
+            values[65] = values[65](unpackValues(values, 66, 67))
+            values[103] = 160318.0
+            values[64]["Position"] = values[65]
+            values[66] = environment.Color3
+            values[65] = values[66]["fromRGB"]
+            values[66] = 32
+            values[67] = 32
+            values[68] = 32
+            values[65] = values[65](unpackValues(values, 66, 68))
+            values[64]["BackgroundColor3"] = values[65]
+            values[103] = 914429.0
+            values[65] = 0
+            values[64]["BorderSizePixel"] = values[65]
+            values[65] = values[63]
+            values[64]["Parent"] = values[65]
+            values[66] = environment.Instance
+            values[65] = values[66]["new"]
+            values[66] = "UICorner"
+            values[67] = values[64]
+            values[65] = values[65](unpackValues(values, 66, 67))
+            values[103] = 483470.0
+            values[67] = environment.UDim
+            values[66] = values[67]["new"]
+            values[67] = 0
+            values[68] = 12
+            values[66] = values[66](unpackValues(values, 67, 68))
+            values[65]["CornerRadius"] = values[66]
+            values[66] = environment.Instance
+            values[65] = values[66]["new"]
+            values[66] = "UIStroke"
+            values[67] = values[64]
+            values[65] = values[65](unpackValues(values, 66, 67))
+            values[67] = environment.Color3
+            values[66] = values[67]["fromRGB"]
+            values[67] = 60
+            values[68] = 60
+            values[69] = 60
+            values[103] = 576667.0
+            values[66] = values[66](unpackValues(values, 67, 69))
+            values[65]["Color"] = values[66]
+            values[66] = 1
+            values[65]["Thickness"] = values[66]
+            values[68] = environment.Enum
+            values[67] = values[68]["ApplyStrokeMode"]
+            values[66] = values[67]["Border"]
+            values[65]["ApplyStrokeMode"] = values[66]
+            values[67] = environment.Instance
+            values[66] = values[67]["new"]
+            values[67] = "ImageLabel"
+            values[66] = values[66](unpackValues(values, 67, 67))
+            values[68] = environment.UDim2
+            values[67] = values[68]["fromScale"]
+            values[103] = 695246.0
+            values[68] = 1
+            values[69] = 1
+            values[67] = values[67](unpackValues(values, 68, 69))
+            values[66]["Size"] = values[67]
+            values[67] = 1
+            values[66]["BackgroundTransparency"] = values[67]
+            values[69] = environment.Enum
+            values[68] = values[69]["ScaleType"]
+            values[67] = values[68]["Crop"]
+            values[66]["ScaleType"] = values[67]
+            values[67] = ""
+            values[66]["Image"] = values[67]
+            values[103] = 124917.0
+            values[67] = values[64]
+            values[66]["Parent"] = values[67]
+            values[68] = environment.Instance
+            values[67] = values[68]["new"]
+            values[68] = "UICorner"
+            values[69] = values[66]
+            values[67] = values[67](unpackValues(values, 68, 69))
+            values[69] = environment.UDim
+            values[68] = values[69]["new"]
+            values[69] = 0
+            values[70] = 12
+            values[68] = values[68](unpackValues(values, 69, 70))
+            values[67]["CornerRadius"] = values[68]
+            values[68] = environment.Instance
+            values[67] = values[68]["new"]
+            values[103] = 639358.0
+            values[68] = "TextLabel"
+            values[67] = values[67](unpackValues(values, 68, 68))
+            values[69] = environment.UDim2
+            values[68] = values[69]["fromScale"]
+            values[69] = 1
+            values[70] = 1
+            values[68] = values[68](unpackValues(values, 69, 70))
+            values[67]["Size"] = values[68]
+            values[68] = 1
+            values[67]["BackgroundTransparency"] = values[68]
+            values[70] = environment.Enum
+            values[69] = values[70]["Font"]
+            values[68] = values[69]["GothamBold"]
+            values[67]["Font"] = values[68]
+            values[68] = "K"
+            values[67]["Text"] = values[68]
+            values[103] = 688121.0
+            values[68] = values[24]
+            values[67]["TextColor3"] = values[68]
+            values[68] = 20
+            values[67]["TextSize"] = values[68]
+            values[68] = false
+            values[67]["Visible"] = values[68]
+            values[68] = values[64]
+            values[67]["Parent"] = values[68]
+            values[68] = values[47]
+            values[69] = values[66]
+            values[103] = 956678.0
+            values[70] = values[67]
+            values[68](unpackValues(values, 69, 70))
+            values[69] = environment.Instance
+            values[68] = values[69]["new"]
+            values[69] = "TextLabel"
+            values[68] = values[68](unpackValues(values, 69, 69))
+            values[69] = 1
+            values[68]["BackgroundTransparency"] = values[69]
+            values[70] = environment.UDim2
+            values[69] = values[70]["fromOffset"]
+            values[70] = 56
+            values[103] = 124047.0
+            values[71] = 8
+            values[69] = values[69](unpackValues(values, 70, 71))
+            values[68]["Position"] = values[69]
+            values[70] = environment.UDim2
+            values[69] = values[70]["new"]
+            values[70] = 1
+            values[74] = 56
+            values[71] = -values[74]
+            values[72] = 0
+            values[73] = 26
+            values[103] = 628392.0
+            values[69] = values[69](unpackValues(values, 70, 73))
+            values[68]["Size"] = values[69]
+            values[71] = environment.Enum
+            values[70] = values[71]["Font"]
+            values[69] = values[70]["GothamBold"]
+            values[68]["Font"] = values[69]
+            values[69] = "KINON HUB"
+            values[68]["Text"] = values[69]
+            values[69] = values[24]
+            values[68]["TextColor3"] = values[69]
+            values[69] = 20
+            values[68]["TextSize"] = values[69]
+            values[71] = environment.Enum
+            values[70] = values[71]["TextXAlignment"]
+            values[103] = 1019331.0
+            values[69] = values[70]["Left"]
+            values[68]["TextXAlignment"] = values[69]
+            values[69] = values[63]
+            values[68]["Parent"] = values[69]
+            values[70] = environment.Instance
+            values[69] = values[70]["new"]
+            values[70] = "Frame"
+            values[69] = values[69](unpackValues(values, 70, 70))
+            values[71] = environment.UDim2
+            values[70] = values[71]["fromOffset"]
+            values[71] = 56
+            values[72] = 34
+            values[103] = 111540.0
+            values[70] = values[70](unpackValues(values, 71, 72))
+            values[69]["Position"] = values[70]
+            values[71] = environment.UDim2
+            values[70] = values[71]["new"]
+            values[71] = 1
+            values[75] = 56
+            values[72] = -values[75]
+            values[73] = 0
+            values[74] = 16
+            values[70] = values[70](unpackValues(values, 71, 74))
+            values[69]["Size"] = values[70]
+            values[70] = 1
+            values[103] = 84186.0
+            values[69]["BackgroundTransparency"] = values[70]
+            values[70] = values[63]
+            values[69]["Parent"] = values[70]
+            values[71] = environment.Instance
+            values[70] = values[71]["new"]
+            values[71] = "Frame"
+            values[70] = values[70](unpackValues(values, 71, 71))
+            values[72] = environment.UDim2
+            values[71] = values[72]["fromOffset"]
+            values[72] = 6
+            values[73] = 6
+            values[71] = values[71](unpackValues(values, 72, 73))
+            values[70]["Size"] = values[71]
+            values[103] = 994489.0
+            values[72] = environment.UDim2
+            values[71] = values[72]["fromOffset"]
+            values[72] = 0
+            values[73] = 5
+            values[71] = values[71](unpackValues(values, 72, 73))
+            values[70]["Position"] = values[71]
+            values[71] = values[49]
+            if not values[71] then
+            else
+              values[103] = 994489.0
+              values[71] = values[22]
+            end
+            values[103] = 337007.0
+            if values[71] then
+            else
+              values[103] = 337007.0
+              values[71] = values[23]
+            end
+            values[103] = 475053.0
+            values[70]["BackgroundColor3"] = values[71]
+            values[71] = 0
+            values[70]["BorderSizePixel"] = values[71]
+            values[71] = values[69]
+            values[70]["Parent"] = values[71]
+            values[72] = environment.Instance
+            values[71] = values[72]["new"]
+            values[72] = "UICorner"
+            values[73] = values[70]
+            values[71] = values[71](unpackValues(values, 72, 73))
+            values[73] = environment.UDim
+            values[103] = 584782.0
+            values[72] = values[73]["new"]
+            values[73] = 1
+            values[74] = 0
+            values[72] = values[72](unpackValues(values, 73, 74))
+            values[71]["CornerRadius"] = values[72]
+            values[72] = environment.Instance
+            values[71] = values[72]["new"]
+            values[72] = "TextLabel"
+            values[71] = values[71](unpackValues(values, 72, 72))
+            values[72] = 1
+            values[71]["BackgroundTransparency"] = values[72]
+            values[73] = environment.UDim2
+            values[72] = values[73]["fromOffset"]
+            values[73] = 12
+            values[74] = 0
+            values[72] = values[72](unpackValues(values, 73, 74))
+            values[103] = 571129.0
+            values[71]["Position"] = values[72]
+            values[73] = environment.UDim2
+            values[72] = values[73]["new"]
+            values[73] = 1
+            values[77] = 12
+            values[74] = -values[77]
+            values[75] = 1
+            values[76] = 0
+            values[72] = values[72](unpackValues(values, 73, 76))
+            values[71]["Size"] = values[72]
+            values[74] = environment.Enum
+            values[73] = values[74]["Font"]
+            values[72] = values[73]["GothamMedium"]
+            values[71]["Font"] = values[72]
+            values[103] = 780365.0
+            values[72] = values[49]
+            if not values[72] then
+            else
+              values[103] = 780365.0
+              values[72] = "Violence District"
+            end
+            values[103] = 221109.0
+            if values[72] then
+            else
+              values[103] = 221109.0
+              values[72] = "Game not supported"
+            end
+            values[103] = 855795.0
+            values[71]["Text"] = values[72]
+            values[72] = values[49]
+            if not values[72] then
+            else
+              values[103] = 855795.0
+              values[73] = environment.Color3
+              values[72] = values[73]["fromRGB"]
+              values[73] = 175
+              values[74] = 175
+              values[75] = 175
+              values[72] = values[72](unpackValues(values, 73, 75))
+            end
+            values[103] = 458695.0
+            if values[72] then
+            else
+              values[103] = 458695.0
+              values[72] = values[23]
+            end
+            values[103] = 642323.0
+            values[71]["TextColor3"] = values[72]
+            values[72] = 10
+            values[71]["TextSize"] = values[72]
+            values[74] = environment.Enum
+            values[73] = values[74]["TextXAlignment"]
+            values[72] = values[73]["Left"]
+            values[71]["TextXAlignment"] = values[72]
+            values[72] = values[69]
+            values[71]["Parent"] = values[72]
+            values[73] = environment.Instance
+            values[72] = values[73]["new"]
+            values[73] = "TextButton"
+            values[103] = 458093.0
+            values[72] = values[72](unpackValues(values, 73, 73))
+            values[74] = environment.UDim2
+            values[73] = values[74]["fromOffset"]
+            values[74] = 32
+            values[75] = 32
+            values[73] = values[73](unpackValues(values, 74, 75))
+            values[72]["Size"] = values[73]
+            values[74] = environment.UDim2
+            values[73] = values[74]["new"]
+            values[74] = 1
+            values[78] = 60
+            values[75] = -values[78]
+            values[76] = 0
+            values[77] = 30
+            values[73] = values[73](unpackValues(values, 74, 77))
+            values[103] = 273347.0
+            values[72]["Position"] = values[73]
+            values[74] = environment.Color3
+            values[73] = values[74]["fromRGB"]
+            values[74] = 32
+            values[75] = 32
+            values[76] = 32
+            values[73] = values[73](unpackValues(values, 74, 76))
+            values[72]["BackgroundColor3"] = values[73]
+            values[73] = 0
+            values[72]["BorderSizePixel"] = values[73]
+            values[103] = 205453.0
+            values[73] = "X"
+            values[72]["Text"] = values[73]
+            values[74] = environment.Color3
+            values[73] = values[74]["fromRGB"]
+            values[74] = 175
+            values[75] = 175
+            values[76] = 175
+            values[73] = values[73](unpackValues(values, 74, 76))
+            values[72]["TextColor3"] = values[73]
+            values[75] = environment.Enum
+            values[103] = 261324.0
+            values[74] = values[75]["Font"]
+            values[73] = values[74]["GothamBold"]
+            values[72]["Font"] = values[73]
+            values[73] = 14
+            values[72]["TextSize"] = values[73]
+            values[73] = false
+            values[72]["AutoButtonColor"] = values[73]
+            values[73] = values[56]
+            values[103] = 719446.0
+            values[72]["Parent"] = values[73]
+            values[74] = environment.Instance
+            values[73] = values[74]["new"]
+            values[74] = "UICorner"
+            values[75] = values[72]
+            values[73] = values[73](unpackValues(values, 74, 75))
+            values[75] = environment.UDim
+            values[74] = values[75]["new"]
+            values[75] = 0
+            values[76] = 10
+            values[74] = values[74](unpackValues(values, 75, 76))
+            values[73]["CornerRadius"] = values[74]
+            values[74] = environment.Instance
+            values[73] = values[74]["new"]
+            values[74] = "UIStroke"
+            values[103] = 741478.0
+            values[75] = values[72]
+            values[73] = values[73](unpackValues(values, 74, 75))
+            values[74] = values[25]
+            values[73]["Color"] = values[74]
+            values[74] = 1
+            values[73]["Thickness"] = values[74]
+            values[76] = environment.Enum
+            values[75] = values[76]["ApplyStrokeMode"]
+            values[103] = 975727.0
+            values[74] = values[75]["Border"]
+            values[73]["ApplyStrokeMode"] = values[74]
+            values[75] = values[72]["MouseEnter"]
+            values[75] = values[75]
+            values[74] = values[75]["Connect"]
+            do
+              local cells = {}
+              cells[0] = {values, 2}
+              cells[1] = {values, 72}
+              cells[2] = {values, 24}
+              cells[3] = {values, 73}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[76] = function(...) return functions["callback_55"](captured, ...) end
+            end
+            values[74](unpackValues(values, 75, 76))
+            values[75] = values[72]["MouseLeave"]
+            values[75] = values[75]
+            values[74] = values[75]["Connect"]
+            do
+              local cells = {}
+              cells[0] = {values, 2}
+              cells[1] = {values, 72}
+              cells[2] = {values, 73}
+              cells[3] = {values, 25}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[76] = function(...) return functions["callback_56"](captured, ...) end
+            end
+            values[74](unpackValues(values, 75, 76))
+            values[103] = 521986.0
+            values[75] = environment.Instance
+            values[74] = values[75]["new"]
+            values[75] = "Frame"
+            values[74] = values[74](unpackValues(values, 75, 75))
+            values[76] = environment.UDim2
+            values[75] = values[76]["new"]
+            values[76] = 1
+            values[80] = 56
+            values[103] = 168778.0
+            values[77] = -values[80]
+            values[78] = 0
+            values[79] = 1
+            values[75] = values[75](unpackValues(values, 76, 79))
+            values[74]["Size"] = values[75]
+            values[76] = environment.UDim2
+            values[75] = values[76]["fromOffset"]
+            values[76] = 28
+            values[77] = 94
+            values[103] = 693642.0
+            values[75] = values[75](unpackValues(values, 76, 77))
+            values[74]["Position"] = values[75]
+            values[75] = values[25]
+            values[74]["BackgroundColor3"] = values[75]
+            values[75] = 0
+            values[74]["BorderSizePixel"] = values[75]
+            values[75] = values[56]
+            values[74]["Parent"] = values[75]
+            values[75] = values[49]
+            values[103] = 357082.0
+            if values[75] then
+            else
+              values[103] = 357082.0
+              values[76] = environment.Instance
+              values[75] = values[76]["new"]
+              values[76] = "Frame"
+              values[75] = values[75](unpackValues(values, 76, 76))
+              values[77] = environment.UDim2
+              values[76] = values[77]["fromOffset"]
+              values[77] = 28
+              values[78] = 106
+              values[103] = 45111.0
+              values[76] = values[76](unpackValues(values, 77, 78))
+              values[75]["Position"] = values[76]
+              values[77] = environment.UDim2
+              values[76] = values[77]["new"]
+              values[77] = 1
+              values[81] = 56
+              values[78] = -values[81]
+              values[79] = 0
+              values[80] = 34
+              values[76] = values[76](unpackValues(values, 77, 80))
+              values[75]["Size"] = values[76]
+              values[103] = 827933.0
+              values[77] = environment.Color3
+              values[76] = values[77]["fromRGB"]
+              values[77] = 38
+              values[78] = 16
+              values[79] = 16
+              values[76] = values[76](unpackValues(values, 77, 79))
+              values[75]["BackgroundColor3"] = values[76]
+              values[76] = 0
+              values[75]["BorderSizePixel"] = values[76]
+              values[76] = values[56]
+              values[75]["Parent"] = values[76]
+              values[77] = environment.Instance
+              values[103] = 936000.0
+              values[76] = values[77]["new"]
+              values[77] = "UICorner"
+              values[78] = values[75]
+              values[76] = values[76](unpackValues(values, 77, 78))
+              values[78] = environment.UDim
+              values[77] = values[78]["new"]
+              values[78] = 0
+              values[79] = 10
+              values[77] = values[77](unpackValues(values, 78, 79))
+              values[76]["CornerRadius"] = values[77]
+              values[77] = environment.Instance
+              values[76] = values[77]["new"]
+              values[77] = "UIStroke"
+              values[78] = values[75]
+              values[76] = values[76](unpackValues(values, 77, 78))
+              values[78] = environment.Color3
+              values[103] = 712264.0
+              values[77] = values[78]["fromRGB"]
+              values[78] = 90
+              values[79] = 30
+              values[80] = 30
+              values[77] = values[77](unpackValues(values, 78, 80))
+              values[76]["Color"] = values[77]
+              values[77] = 1
+              values[76]["Thickness"] = values[77]
+              values[79] = environment.Enum
+              values[78] = values[79]["ApplyStrokeMode"]
+              values[77] = values[78]["Border"]
+              values[76]["ApplyStrokeMode"] = values[77]
+              values[78] = environment.Instance
+              values[77] = values[78]["new"]
+              values[103] = 813365.0
+              values[78] = "TextLabel"
+              values[77] = values[77](unpackValues(values, 78, 78))
+              values[78] = 1
+              values[77]["BackgroundTransparency"] = values[78]
+              values[79] = environment.UDim2
+              values[78] = values[79]["fromScale"]
+              values[79] = 1
+              values[80] = 1
+              values[103] = 876432.0
+              values[78] = values[78](unpackValues(values, 79, 80))
+              values[77]["Size"] = values[78]
+              values[80] = environment.Enum
+              values[79] = values[80]["Font"]
+              values[78] = values[79]["GothamMedium"]
+              values[77]["Font"] = values[78]
+              values[78] = "This script only works in Violence District"
+              values[77]["Text"] = values[78]
+              values[79] = environment.Color3
+              values[78] = values[79]["fromRGB"]
+              values[79] = 255
+              values[80] = 170
+              values[81] = 170
+              values[78] = values[78](unpackValues(values, 79, 81))
+              values[77]["TextColor3"] = values[78]
+              values[78] = 11
+              values[103] = 227656.0
+              values[77]["TextSize"] = values[78]
+              values[78] = values[75]
+              values[77]["Parent"] = values[78]
+            end
+            values[103] = 342154.0
+            values[76] = environment.Instance
+            values[75] = values[76]["new"]
+            values[76] = "TextLabel"
+            values[75] = values[75](unpackValues(values, 76, 76))
+            values[76] = 1
+            values[75]["BackgroundTransparency"] = values[76]
+            values[77] = environment.UDim2
+            values[76] = values[77]["fromOffset"]
+            values[77] = 30
+            values[78] = 108 + values[50]
+            values[76] = values[76](unpackValues(values, 77, 78))
+            values[75]["Position"] = values[76]
+            values[77] = environment.UDim2
+            values[76] = values[77]["new"]
+            values[77] = 1
+            values[103] = 308407.0
+            values[81] = 60
+            values[78] = -values[81]
+            values[79] = 0
+            values[80] = 14
+            values[76] = values[76](unpackValues(values, 77, 80))
+            values[75]["Size"] = values[76]
+            values[78] = environment.Enum
+            values[77] = values[78]["Font"]
+            values[76] = values[77]["GothamBold"]
+            values[75]["Font"] = values[76]
+            values[76] = "ACCESS KEY"
+            values[103] = 558284.0
+            values[75]["Text"] = values[76]
+            values[76] = values[20]
+            values[75]["TextColor3"] = values[76]
+            values[76] = 9
+            values[75]["TextSize"] = values[76]
+            values[78] = environment.Enum
+            values[77] = values[78]["TextXAlignment"]
+            values[76] = values[77]["Left"]
+            values[75]["TextXAlignment"] = values[76]
+            values[76] = values[56]
+            values[75]["Parent"] = values[76]
+            values[103] = 809077.0
+            values[77] = environment.Instance
+            values[76] = values[77]["new"]
+            values[77] = "Frame"
+            values[76] = values[76](unpackValues(values, 77, 77))
+            values[78] = environment.UDim2
+            values[77] = values[78]["fromOffset"]
+            values[78] = 28
+            values[79] = 126 + values[50]
+            values[77] = values[77](unpackValues(values, 78, 79))
+            values[76]["Position"] = values[77]
+            values[78] = environment.UDim2
+            values[77] = values[78]["new"]
+            values[103] = 969666.0
+            values[78] = 1
+            values[82] = 56
+            values[79] = -values[82]
+            values[80] = 0
+            values[81] = 46
+            values[77] = values[77](unpackValues(values, 78, 81))
+            values[76]["Size"] = values[77]
+            values[77] = values[18]
+            values[76]["BackgroundColor3"] = values[77]
+            values[77] = 0
+            values[76]["BorderSizePixel"] = values[77]
+            values[77] = values[56]
+            values[76]["Parent"] = values[77]
+            values[78] = environment.Instance
+            values[77] = values[78]["new"]
+            values[103] = 178280.0
+            values[78] = "UICorner"
+            values[79] = values[76]
+            values[77] = values[77](unpackValues(values, 78, 79))
+            values[79] = environment.UDim
+            values[78] = values[79]["new"]
+            values[79] = 0
+            values[80] = 12
+            values[78] = values[78](unpackValues(values, 79, 80))
+            values[77]["CornerRadius"] = values[78]
+            values[78] = environment.Instance
+            values[77] = values[78]["new"]
+            values[103] = 508180.0
+            values[78] = "UIStroke"
+            values[79] = values[76]
+            values[77] = values[77](unpackValues(values, 78, 79))
+            values[78] = values[25]
+            values[77]["Color"] = values[78]
+            values[78] = 1
+            values[77]["Thickness"] = values[78]
+            values[80] = environment.Enum
+            values[79] = values[80]["ApplyStrokeMode"]
+            values[78] = values[79]["Border"]
+            values[77]["ApplyStrokeMode"] = values[78]
+            values[79] = environment.Instance
+            values[78] = values[79]["new"]
+            values[79] = "TextBox"
+            values[78] = values[78](unpackValues(values, 79, 79))
+            values[103] = 675344.0
+            values[80] = environment.UDim2
+            values[79] = values[80]["new"]
+            values[80] = 1
+            values[84] = 28
+            values[81] = -values[84]
+            values[82] = 1
+            values[83] = 0
+            values[79] = values[79](unpackValues(values, 80, 83))
+            values[78]["Size"] = values[79]
+            values[80] = environment.UDim2
+            values[79] = values[80]["fromOffset"]
+            values[103] = 100105.0
+            values[80] = 14
+            values[81] = 0
+            values[79] = values[79](unpackValues(values, 80, 81))
+            values[78]["Position"] = values[79]
+            values[79] = 1
+            values[78]["BackgroundTransparency"] = values[79]
+            values[79] = false
+            values[78]["ClearTextOnFocus"] = values[79]
+            values[103] = 710704.0
+            values[79] = "Paste your key"
+            values[78]["PlaceholderText"] = values[79]
+            values[79] = values[21]
+            values[78]["PlaceholderColor3"] = values[79]
+            values[79] = values[37]
+            values[79] = values[79](unpackValues(values, 80, 79))
+            if values[79] then
+            else
+              values[103] = 710704.0
+              values[79] = ""
+            end
+            values[103] = 382293.0
+            values[78]["Text"] = values[79]
+            values[79] = values[19]
+            values[78]["TextColor3"] = values[79]
+            values[81] = environment.Enum
+            values[80] = values[81]["Font"]
+            values[79] = values[80]["Code"]
+            values[78]["Font"] = values[79]
+            values[79] = 13
+            values[78]["TextSize"] = values[79]
+            values[81] = environment.Enum
+            values[80] = values[81]["TextXAlignment"]
+            values[103] = 165860.0
+            values[79] = values[80]["Left"]
+            values[78]["TextXAlignment"] = values[79]
+            values[81] = environment.Enum
+            values[80] = values[81]["TextTruncate"]
+            values[79] = values[80]["AtEnd"]
+            values[78]["TextTruncate"] = values[79]
+            values[79] = values[76]
+            values[78]["Parent"] = values[79]
+            values[103] = 325019.0
+            values[80] = values[78]["Focused"]
+            values[80] = values[80]
+            values[79] = values[80]["Connect"]
+            do
+              local cells = {}
+              cells[0] = {values, 2}
+              cells[1] = {values, 77}
+              cells[2] = {values, 24}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[81] = function(...) return functions["callback_57"](captured, ...) end
+            end
+            values[79](unpackValues(values, 80, 81))
+            values[80] = values[78]["FocusLost"]
+            values[80] = values[80]
+            values[79] = values[80]["Connect"]
+            do
+              local cells = {}
+              cells[0] = {values, 2}
+              cells[1] = {values, 77}
+              cells[2] = {values, 25}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[81] = function(...) return functions["callback_58"](captured, ...) end
+            end
+            values[79](unpackValues(values, 80, 81))
+            values[103] = 1033000.0
+            values[80] = environment.Instance
+            values[79] = values[80]["new"]
+            values[80] = "Frame"
+            values[79] = values[79](unpackValues(values, 80, 80))
+            values[81] = environment.UDim2
+            values[80] = values[81]["fromOffset"]
+            values[81] = 28
+            values[82] = 186 + values[50]
+            values[103] = 358352.0
+            values[80] = values[80](unpackValues(values, 81, 82))
+            values[79]["Position"] = values[80]
+            values[81] = environment.UDim2
+            values[80] = values[81]["new"]
+            values[81] = 1
+            values[85] = 56
+            values[82] = -values[85]
+            values[83] = 0
+            values[84] = 42
+            values[80] = values[80](unpackValues(values, 81, 84))
+            values[103] = 823199.0
+            values[79]["Size"] = values[80]
+            values[80] = 1
+            values[79]["BackgroundTransparency"] = values[80]
+            values[80] = values[56]
+            values[79]["Parent"] = values[80]
+            values[81] = environment.Instance
+            values[80] = values[81]["new"]
+            values[81] = "UIListLayout"
+            values[82] = values[79]
+            values[80] = values[80](unpackValues(values, 81, 82))
+            values[83] = environment.Enum
+            values[82] = values[83]["FillDirection"]
+            values[81] = values[82]["Horizontal"]
+            values[80]["FillDirection"] = values[81]
+            values[103] = 909043.0
+            values[82] = environment.UDim
+            values[81] = values[82]["new"]
+            values[82] = 0
+            values[83] = 8
+            values[81] = values[81](unpackValues(values, 82, 83))
+            values[80]["Padding"] = values[81]
+            values[83] = environment.Enum
+            values[82] = values[83]["HorizontalAlignment"]
+            values[81] = values[82]["Center"]
+            values[80]["HorizontalAlignment"] = values[81]
+            do
+              local cells = {}
+              cells[0] = {values, 2}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[81] = function(...) return functions["callback_59"](captured, ...) end
+            end
+            values[103] = 364490.0
+            values[83] = environment.Instance
+            values[82] = values[83]["new"]
+            values[83] = "TextButton"
+            values[82] = values[82](unpackValues(values, 83, 83))
+            values[84] = environment.UDim2
+            values[83] = values[84]["new"]
+            values[84] = 0.5
+            values[88] = 4
+            values[85] = -values[88]
+            values[86] = 1
+            values[103] = 772591.0
+            values[87] = 0
+            values[83] = values[83](unpackValues(values, 84, 87))
+            values[82]["Size"] = values[83]
+            values[83] = values[24]
+            values[82]["BackgroundColor3"] = values[83]
+            values[83] = 0
+            values[82]["BorderSizePixel"] = values[83]
+            values[83] = "GET FREE KEY"
+            values[82]["Text"] = values[83]
+            values[84] = environment.Color3
+            values[83] = values[84]["fromRGB"]
+            values[84] = 10
+            values[85] = 10
+            values[86] = 10
+            values[83] = values[83](unpackValues(values, 84, 86))
+            values[82]["TextColor3"] = values[83]
+            values[103] = 411674.0
+            values[85] = environment.Enum
+            values[84] = values[85]["Font"]
+            values[83] = values[84]["GothamBold"]
+            values[82]["Font"] = values[83]
+            values[83] = 11
+            values[82]["TextSize"] = values[83]
+            values[83] = false
+            values[82]["AutoButtonColor"] = values[83]
+            values[83] = values[79]
+            values[82]["Parent"] = values[83]
+            values[84] = environment.Instance
+            values[103] = 7309.0
+            values[83] = values[84]["new"]
+            values[84] = "UICorner"
+            values[85] = values[82]
+            values[83] = values[83](unpackValues(values, 84, 85))
+            values[85] = environment.UDim
+            values[84] = values[85]["new"]
+            values[85] = 0
+            values[86] = 12
+            values[103] = 634896.0
+            values[84] = values[84](unpackValues(values, 85, 86))
+            values[83]["CornerRadius"] = values[84]
+            values[83] = values[81]
+            values[84] = values[82]
+            values[83](unpackValues(values, 84, 84))
+            values[84] = environment.Instance
+            values[83] = values[84]["new"]
+            values[84] = "TextButton"
+            values[83] = values[83](unpackValues(values, 84, 84))
+            values[103] = 535003.0
+            values[85] = environment.UDim2
+            values[84] = values[85]["new"]
+            values[85] = 0.5
+            values[89] = 4
+            values[86] = -values[89]
+            values[87] = 1
+            values[88] = 0
+            values[84] = values[84](unpackValues(values, 85, 88))
+            values[83]["Size"] = values[84]
+            values[85] = environment.Color3
+            values[84] = values[85]["fromRGB"]
+            values[85] = 32
+            values[86] = 32
+            values[87] = 32
+            values[84] = values[84](unpackValues(values, 85, 87))
+            values[103] = 790286.0
+            values[83]["BackgroundColor3"] = values[84]
+            values[84] = 0
+            values[83]["BorderSizePixel"] = values[84]
+            values[84] = "UNLOCK"
+            values[83]["Text"] = values[84]
+            values[84] = values[19]
+            values[83]["TextColor3"] = values[84]
+            values[86] = environment.Enum
+            values[103] = 70703.0
+            values[85] = values[86]["Font"]
+            values[84] = values[85]["GothamBold"]
+            values[83]["Font"] = values[84]
+            values[84] = 11
+            values[83]["TextSize"] = values[84]
+            values[84] = false
+            values[83]["AutoButtonColor"] = values[84]
+            values[84] = values[79]
+            values[83]["Parent"] = values[84]
+            values[85] = environment.Instance
+            values[84] = values[85]["new"]
+            values[103] = 424459.0
+            values[85] = "UICorner"
+            values[86] = values[83]
+            values[84] = values[84](unpackValues(values, 85, 86))
+            values[86] = environment.UDim
+            values[85] = values[86]["new"]
+            values[86] = 0
+            values[87] = 12
+            values[85] = values[85](unpackValues(values, 86, 87))
+            values[103] = 364475.0
+            values[84]["CornerRadius"] = values[85]
+            values[85] = environment.Instance
+            values[84] = values[85]["new"]
+            values[85] = "UIStroke"
+            values[86] = values[83]
+            values[84] = values[84](unpackValues(values, 85, 86))
+            values[85] = values[25]
+            values[84]["Color"] = values[85]
+            values[85] = 1
+            values[84]["Thickness"] = values[85]
+            values[87] = environment.Enum
+            values[103] = 746043.0
+            values[86] = values[87]["ApplyStrokeMode"]
+            values[85] = values[86]["Border"]
+            values[84]["ApplyStrokeMode"] = values[85]
+            values[85] = values[81]
+            values[86] = values[83]
+            values[85](unpackValues(values, 86, 86))
+            values[86] = environment.Instance
+            values[85] = values[86]["new"]
+            values[86] = "Frame"
+            values[85] = values[85](unpackValues(values, 86, 86))
+            values[87] = environment.UDim2
+            values[86] = values[87]["fromOffset"]
+            values[87] = 28
+            values[88] = 242 + values[50]
+            values[86] = values[86](unpackValues(values, 87, 88))
+            values[103] = 835025.0
+            values[85]["Position"] = values[86]
+            values[87] = environment.UDim2
+            values[86] = values[87]["new"]
+            values[87] = 1
+            values[91] = 56
+            values[88] = -values[91]
+            values[89] = 0
+            values[90] = 36
+            values[86] = values[86](unpackValues(values, 87, 90))
+            values[103] = 764245.0
+            values[85]["Size"] = values[86]
+            values[86] = values[18]
+            values[85]["BackgroundColor3"] = values[86]
+            values[86] = 0
+            values[85]["BorderSizePixel"] = values[86]
+            values[86] = values[56]
+            values[85]["Parent"] = values[86]
+            values[87] = environment.Instance
+            values[86] = values[87]["new"]
+            values[87] = "UICorner"
+            values[88] = values[85]
+            values[86] = values[86](unpackValues(values, 87, 88))
+            values[88] = environment.UDim
+            values[87] = values[88]["new"]
+            values[88] = 0
+            values[89] = 10
+            values[103] = 112835.0
+            values[87] = values[87](unpackValues(values, 88, 89))
+            values[86]["CornerRadius"] = values[87]
+            values[87] = environment.Instance
+            values[86] = values[87]["new"]
+            values[87] = "UIStroke"
+            values[88] = values[85]
+            values[86] = values[86](unpackValues(values, 87, 88))
+            values[87] = values[25]
+            values[86]["Color"] = values[87]
+            values[87] = 1
+            values[103] = 423649.0
+            values[86]["Thickness"] = values[87]
+            values[89] = environment.Enum
+            values[88] = values[89]["ApplyStrokeMode"]
+            values[87] = values[88]["Border"]
+            values[86]["ApplyStrokeMode"] = values[87]
+            values[88] = environment.Instance
+            values[87] = values[88]["new"]
+            values[88] = "Frame"
+            values[87] = values[87](unpackValues(values, 88, 88))
+            values[103] = 177560.0
+            values[89] = environment.UDim2
+            values[88] = values[89]["fromOffset"]
+            values[89] = 6
+            values[90] = 6
+            values[88] = values[88](unpackValues(values, 89, 90))
+            values[87]["Size"] = values[88]
+            values[89] = environment.UDim2
+            values[88] = values[89]["fromOffset"]
+            values[89] = 14
+            values[90] = 15
+            values[88] = values[88](unpackValues(values, 89, 90))
+            values[87]["Position"] = values[88]
+            values[88] = values[21]
+            values[87]["BackgroundColor3"] = values[88]
+            values[88] = 0
+            values[103] = 779825.0
+            values[87]["BorderSizePixel"] = values[88]
+            values[88] = values[85]
+            values[87]["Parent"] = values[88]
+            values[89] = environment.Instance
+            values[88] = values[89]["new"]
+            values[89] = "UICorner"
+            values[90] = values[87]
+            values[88] = values[88](unpackValues(values, 89, 90))
+            values[90] = environment.UDim
+            values[89] = values[90]["new"]
+            values[90] = 1
+            values[91] = 0
+            values[89] = values[89](unpackValues(values, 90, 91))
+            values[88]["CornerRadius"] = values[89]
+            values[89] = environment.Instance
+            values[103] = 1046794.0
+            values[88] = values[89]["new"]
+            values[89] = "TextLabel"
+            values[88] = values[88](unpackValues(values, 89, 89))
+            values[89] = 1
+            values[88]["BackgroundTransparency"] = values[89]
+            values[90] = environment.UDim2
+            values[89] = values[90]["fromOffset"]
+            values[90] = 28
+            values[91] = 0
+            values[89] = values[89](unpackValues(values, 90, 91))
+            values[88]["Position"] = values[89]
+            values[103] = 82684.0
+            values[90] = environment.UDim2
+            values[89] = values[90]["new"]
+            values[90] = 1
+            values[94] = 40
+            values[91] = -values[94]
+            values[92] = 1
+            values[93] = 0
+            values[89] = values[89](unpackValues(values, 90, 93))
+            values[103] = 357277.0
+            values[88]["Size"] = values[89]
+            values[91] = environment.Enum
+            values[90] = values[91]["Font"]
+            values[89] = values[90]["Code"]
+            values[88]["Font"] = values[89]
+            values[89] = "No active key"
+            values[88]["Text"] = values[89]
+            values[89] = values[21]
+            values[88]["TextColor3"] = values[89]
+            values[89] = 12
+            values[88]["TextSize"] = values[89]
+            values[91] = environment.Enum
+            values[90] = values[91]["TextXAlignment"]
+            values[89] = values[90]["Left"]
+            values[88]["TextXAlignment"] = values[89]
+            values[89] = values[85]
+            values[103] = 620493.0
+            values[88]["Parent"] = values[89]
+            values[90] = environment.Instance
+            values[89] = values[90]["new"]
+            values[90] = "TextLabel"
+            values[89] = values[89](unpackValues(values, 90, 90))
+            values[90] = 1
+            values[89]["BackgroundTransparency"] = values[90]
+            values[91] = environment.UDim2
+            values[90] = values[91]["new"]
+            values[91] = 0
+            values[103] = 508057.0
+            values[92] = 28
+            values[93] = 1
+            values[95] = 46
+            values[94] = -values[95]
+            values[90] = values[90](unpackValues(values, 91, 94))
+            values[89]["Position"] = values[90]
+            values[91] = environment.UDim2
+            values[90] = values[91]["new"]
+            values[103] = 247217.0
+            values[91] = 1
+            values[95] = 56
+            values[92] = -values[95]
+            values[93] = 0
+            values[94] = 18
+            values[90] = values[90](unpackValues(values, 91, 94))
+            values[89]["Size"] = values[90]
+            values[92] = environment.Enum
+            values[91] = values[92]["Font"]
+            values[90] = values[91]["GothamMedium"]
+            values[89]["Font"] = values[90]
+            values[103] = 802171.0
+            values[90] = values[49]
+            if not values[90] then
+            else
+              values[103] = 802171.0
+              values[90] = "Keys are shared"
+            end
+            values[103] = 26759.0
+            if values[90] then
+            else
+              values[103] = 26759.0
+              values[90] = "Open Violence District to unlock"
+            end
+            values[103] = 508575.0
+            values[89]["Text"] = values[90]
+            values[90] = values[20]
+            values[89]["TextColor3"] = values[90]
+            values[90] = 10
+            values[89]["TextSize"] = values[90]
+            values[92] = environment.Enum
+            values[91] = values[92]["TextXAlignment"]
+            values[90] = values[91]["Center"]
+            values[89]["TextXAlignment"] = values[90]
+            values[90] = values[56]
+            values[89]["Parent"] = values[90]
+            values[91] = environment.Instance
+            values[90] = values[91]["new"]
+            values[91] = "TextLabel"
+            values[90] = values[90](unpackValues(values, 91, 91))
+            values[103] = 60040.0
+            values[91] = 1
+            values[90]["BackgroundTransparency"] = values[91]
+            values[92] = environment.UDim2
+            values[91] = values[92]["new"]
+            values[92] = 0
+            values[93] = 28
+            values[94] = 1
+            values[96] = 24
+            values[95] = -values[96]
+            values[103] = 577688.0
+            values[91] = values[91](unpackValues(values, 92, 95))
+            values[90]["Position"] = values[91]
+            values[92] = environment.UDim2
+            values[91] = values[92]["new"]
+            values[92] = 1
+            values[96] = 56
+            values[93] = -values[96]
+            values[94] = 0
+            values[103] = 973419.0
+            values[95] = 16
+            values[91] = values[91](unpackValues(values, 92, 95))
+            values[90]["Size"] = values[91]
+            values[93] = environment.Enum
+            values[92] = values[93]["Font"]
+            values[91] = values[92]["Code"]
+            values[90]["Font"] = values[91]
+            values[91] = "KINON HUB"
+            values[90]["Text"] = values[91]
+            values[91] = values[21]
+            values[90]["TextColor3"] = values[91]
+            values[91] = 9
+            values[90]["TextSize"] = values[91]
+            values[103] = 156679.0
+            values[93] = environment.Enum
+            values[92] = values[93]["TextXAlignment"]
+            values[91] = values[92]["Center"]
+            values[90]["TextXAlignment"] = values[91]
+            values[91] = values[56]
+            values[90]["Parent"] = values[91]
+            do
+              local cells = {}
+              cells[0] = {values, 2}
+              cells[1] = {values, 59}
+              cells[2] = {values, 55}
+              cells[3] = {values, 53}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[91] = function(...) return functions["callback_62"](captured, ...) end
+            end
+            do
+              local cells = {}
+              cells[0] = {values, 29}
+              cells[1] = {values, 78}
+              cells[2] = {values, 27}
+              cells[3] = {values, 33}
+              cells[4] = {values, 38}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[92] = function(...) return functions["callback_64"](captured, ...) end
+            end
+            values[93] = environment.pcall
+            do
+              local cells = {}
+              cells[0] = {values, 92}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[94] = function(...) return functions["callback_65"](captured, ...) end
+            end
+            values[93](unpackValues(values, 94, 94))
+            values[93] = environment.pcall
+            values[103] = 365507.0
+            do
+              local cells = {}
+              cells[0] = {values, 5}
+              cells[1] = {values, 92}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[94] = function(...) return functions["callback_67"](captured, ...) end
+            end
+            values[93](unpackValues(values, 94, 94))
+            do
+              local cells = {}
+              cells[0] = {values, 89}
+              cells[1] = {values, 22}
+              cells[2] = {values, 23}
+              cells[3] = {values, 20}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[93] = function(...) return functions["callback_69"](captured, ...) end
+            end
+            do
+              local cells = {}
+              cells[0] = {values, 39}
+              cells[1] = {values, 88}
+              cells[2] = {values, 31}
+              cells[3] = {values, 22}
+              cells[4] = {values, 87}
+              cells[5] = {values, 36}
+              cells[6] = {values, 30}
+              cells[7] = {values, 21}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[94] = function(...) return functions["callback_70"](captured, ...) end
+            end
+            do
+              local cells = {}
+              cells[0] = {values, 42}
+              cells[1] = {values, 43}
+              cells[2] = {values, 39}
+              cells[3] = {values, 82}
+              cells[4] = {values, 31}
+              cells[5] = {values, 21}
+              cells[6] = {values, 24}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[95] = function(...) return functions["callback_71"](captured, ...) end
+            end
+            values[97] = environment.task
+            values[96] = values[97]["spawn"]
+            do
+              local cells = {}
+              cells[0] = {values, 53}
+              cells[1] = {values, 94}
+              cells[2] = {values, 95}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[97] = function(...) return functions["callback_72"](captured, ...) end
+            end
+            values[96](unpackValues(values, 97, 97))
+            values[96] = false
+            do
+              local cells = {}
+              cells[0] = {values, 96}
+              cells[1] = {values, 38}
+              cells[2] = {values, 83}
+              cells[3] = {values, 22}
+              cells[4] = {values, 2}
+              cells[5] = {values, 84}
+              cells[6] = {values, 93}
+              cells[7] = {values, 34}
+              cells[8] = {values, 94}
+              cells[9] = {values, 32}
+              cells[10] = {values, 19}
+              cells[11] = {values, 25}
+              cells[12] = {values, 8}
+              cells[13] = {values, 91}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[97] = function(...) return functions["callback_73"](captured, ...) end
+            end
+            values[98] = false
+            values[103] = 193014.0
+            values[100] = values[82]["MouseButton1Click"]
+            values[100] = values[100]
+            values[99] = values[100]["Connect"]
+            do
+              local cells = {}
+              cells[0] = {values, 98}
+              cells[1] = {values, 43}
+              cells[2] = {values, 34}
+              cells[3] = {values, 42}
+              cells[4] = {values, 82}
+              cells[5] = {values, 33}
+              cells[6] = {values, 27}
+              cells[7] = {values, 78}
+              cells[8] = {values, 41}
+              cells[9] = {values, 38}
+              cells[10] = {values, 93}
+              cells[11] = {values, 95}
+              cells[12] = {values, 94}
+              cells[13] = {values, 97}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[101] = function(...) return functions["callback_76"](captured, ...) end
+            end
+            values[99](unpackValues(values, 100, 101))
+            values[100] = values[83]["MouseButton1Click"]
+            values[100] = values[100]
+            values[99] = values[100]["Connect"]
+            do
+              local cells = {}
+              cells[0] = {values, 98}
+              cells[1] = {values, 83}
+              cells[2] = {values, 93}
+              cells[3] = {values, 37}
+              cells[4] = {values, 29}
+              cells[5] = {values, 78}
+              cells[6] = {values, 39}
+              cells[7] = {values, 97}
+              cells[8] = {values, 27}
+              cells[9] = {values, 33}
+              cells[10] = {values, 38}
+              cells[11] = {values, 34}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[101] = function(...) return functions["callback_78"](captured, ...) end
+            end
+            values[99](unpackValues(values, 100, 101))
+            values[100] = values[72]["MouseButton1Click"]
+            values[103] = 446243.0
+            values[100] = values[100]
+            values[99] = values[100]["Connect"]
+            do
+              local cells = {}
+              cells[0] = {values, 92}
+              cells[1] = {values, 91}
+              local captured = setmetatable({}, captureMetatable)
+              rawset(captured, false, cells)
+              captureGroups[#captureGroups + 1] = cells
+              values[101] = function(...) return functions["callback_80"](captured, ...) end
+            end
+            values[99](unpackValues(values, 100, 101))
+            closeCapturedValues(captureGroups, values, 0)
+            return
+          else
+            values[103] = 973885
+            values[45] = values[33]
+            values[45] = values[45](unpackValues(values, 46, 45))
+            values[46] = false
+            values[47] = values[45]
+            if not values[47] then
+            else
+              values[103] = 821275
+              values[47] = environment.ipairs
+              values[48] = values[27]
+              values[47], values[48], values[49] = values[47](unpackValues(values, 48, 48))
+              if type(values[47]) ~= "function" then
+                local source = values[47]
+                if type(source) == "table" and getmetatable(source) == nil then
+                  values[47], values[48], values[49] = next, source, nil
+                else
+                  values[47] = coroutine.wrap(function() for key, value in source do coroutine.yield(key, value) end end)
+                  values[48], values[49] = nil, nil
+                end
+              end
+              do
+                local leaveLoop260 = 0
+                while true do
+                  values[103] = 996858
+                  local results = packValues(values[47](values[48], values[49]))
+                  for index = 1, 2 do values[49 + index] = results[index] end
+                  if values[50] ~= nil then
+                    values[49] = values[50]
+                    values[103] = 388433
+                    if not (values[51] == values[44]) then
+                      continue
+                    else
+                      leaveLoop260 = 266
+                      break
+                    end
+                  end
+                  leaveLoop260 = 242
+                  break
+                end
+                if leaveLoop260 == 242 then
+                elseif leaveLoop260 == 266 then
+                  values[103] = 388433
+                  values[46] = true
+                end
+              end
+            end
+            values[103] = 552112
+            values[47] = values[46]
+            if values[47] then
+              values[103] = 118623
+              values[47] = values[39]
+              values[47] = values[47](unpackValues(values, 48, 47))
+              if not (0 < values[47]) then
+                values[103] = 382112
+                do
+                  local cells = {}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[44] = function(...) return functions["extractAssetId"](captured, ...) end
+                end
+                do
+                  local cells = {}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[45] = function(...) return functions["callback_41"](captured, ...) end
+                end
+                do
+                  local cells = {}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[46] = function(...) return functions["callback_43"](captured, ...) end
+                end
+                do
+                  local cells = {}
+                  cells[0] = {values, 26}
+                  cells[1] = {values, 44}
+                  cells[2] = {values, 45}
+                  cells[3] = {values, 46}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[47] = function(...) return functions["callback_47"](captured, ...) end
+                end
+                for index = 48, 48 do values[index] = nil end
+                values[49] = environment.pcall
+                do
+                  local cells = {}
+                  cells[0] = {values, 48}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[50] = function(...) return functions["callback_49"](captured, ...) end
+                end
+                values[49](unpackValues(values, 50, 50))
+                values[49] = values[48]
+                if values[49] then
+                else
+                  values[103] = 382112
+                  values[50] = values[5]
+                  values[49] = values[50]["WaitForChild"]
+                  values[103] = 837070
+                  values[51] = "PlayerGui"
+                  values[49] = values[49](unpackValues(values, 50, 51))
+                end
+                values[103] = 499121
+                values[48] = values[49]
+                values[49] = environment.ipairs
+                values[50] = {}
+                values[51] = values[48]
+                values[53] = values[5]
+                values[52] = values[53]["WaitForChild"]
+                values[54] = "PlayerGui"
+                local results = packValues(values[52](unpackValues(values, 53, 54)))
+                registerTop = 52 + results.n - 1
+                for index = 52, registerTop do values[index] = results[index - 52 + 1] end
+                for index = 1, registerTop - 50 do values[50][0 + index] = values[50 + index] end
+                values[49], values[50], values[51] = values[49](unpackValues(values, 50, 50))
+                values[103] = 499121.0
+                if type(values[49]) ~= "function" then
+                  local source = values[49]
+                  if type(source) == "table" and getmetatable(source) == nil then
+                    values[49], values[50], values[51] = next, source, nil
+                  else
+                    values[49] = coroutine.wrap(function() for key, value in source do coroutine.yield(key, value) end end)
+                    values[50], values[51] = nil, nil
+                  end
+                end
+                do
+                  local leaveLoop277 = 0
+                  while true do
+                    values[103] = 441130.0
+                    local results = packValues(values[49](values[50], values[51]))
+                    for index = 1, 2 do values[51 + index] = results[index] end
+                    if values[52] ~= nil then
+                      values[51] = values[52]
+                      do
+                        local leaveLoop279 = 0
+                        while true do
+                          values[103] = 973365.0
+                          values[55] = values[53]
+                          values[54] = values[55]["FindFirstChild"]
+                          values[56] = "KinonKeySystem"
+                          values[54] = values[54](unpackValues(values, 55, 56))
+                          values[55] = values[54]
+                          if not values[55] then
+                            leaveLoop279 = 277
+                            break
+                          else
+                            values[103] = 973365.0
+                            values[56] = values[54]
+                            values[55] = values[56]["Destroy"]
+                            values[55](unpackValues(values, 56, 56))
+                            local results = packValues(values[49](values[50], values[51]))
+                            for index = 1, 2 do values[51 + index] = results[index] end
+                            if values[52] ~= nil then
+                              values[51] = values[52]
+                              continue
+                            end
+                          end
+                          leaveLoop279 = 280
+                          break
+                        end
+                        if leaveLoop279 == 277 then
+                          continue
+                        elseif leaveLoop279 == 280 then
+                        end
+                      end
+                    end
+                    leaveLoop277 = 280
+                    break
+                  end
+                end
+                values[103] = 267653.0
+                values[49] = values[32]
+                values[49] = values[49](unpackValues(values, 50, 49))
+                values[50] = values[49]
+                if not values[50] then
+                else
+                  values[103] = 267653.0
+                  values[50] = 0
+                end
+                values[103] = 2062.0
+                if values[50] then
+                else
+                  values[103] = 2062.0
+                  values[50] = 46
+                end
+                values[103] = 871382.0
+                values[51] = 400
+                values[52] = 330 + values[50]
+                values[54] = environment.Instance
+                values[53] = values[54]["new"]
+                values[54] = "ScreenGui"
+                values[53] = values[53](unpackValues(values, 54, 54))
+                values[54] = "KinonKeySystem"
+                values[53]["Name"] = values[54]
+                values[54] = false
+                values[53]["ResetOnSpawn"] = values[54]
+                values[54] = true
+                values[53]["IgnoreGuiInset"] = values[54]
+                values[54] = 10000
+                values[53]["DisplayOrder"] = values[54]
+                values[54] = environment.pcall
+                do
+                  local cells = {}
+                  cells[0] = {values, 53}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[55] = function(...) return functions["callback_50"](captured, ...) end
+                end
+                values[103] = 437287.0
+                values[54](unpackValues(values, 55, 55))
+                values[54] = values[48]
+                values[53]["Parent"] = values[54]
+                values[54] = {}
+                values[56] = values[53]["Destroying"]
+                values[56] = values[56]
+                values[55] = values[56]["Connect"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 54}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[57] = function(...) return functions["callback_51"](captured, ...) end
+                end
+                values[55](unpackValues(values, 56, 57))
+                values[103] = 766321.0
+                values[56] = environment.Instance
+                values[55] = values[56]["new"]
+                values[56] = "Frame"
+                values[55] = values[55](unpackValues(values, 56, 56))
+                values[57] = environment.UDim2
+                values[56] = values[57]["fromScale"]
+                values[57] = 1
+                values[58] = 1
+                values[56] = values[56](unpackValues(values, 57, 58))
+                values[103] = 837025.0
+                values[55]["Size"] = values[56]
+                values[57] = environment.Color3
+                values[56] = values[57]["new"]
+                values[57] = 0
+                values[58] = 0
+                values[59] = 0
+                values[56] = values[56](unpackValues(values, 57, 59))
+                values[55]["BackgroundColor3"] = values[56]
+                values[56] = 1
+                values[55]["BackgroundTransparency"] = values[56]
+                values[56] = 0
+                values[103] = 96878.0
+                values[55]["BorderSizePixel"] = values[56]
+                values[56] = true
+                values[55]["Active"] = values[56]
+                values[56] = values[53]
+                values[55]["Parent"] = values[56]
+                values[58] = values[2]
+                values[57] = values[58]["Create"]
+                values[59] = values[55]
+                values[62] = environment.TweenInfo
+                values[60] = values[62]["new"]
+                values[61] = 0.3
+                values[64] = environment.Enum
+                values[103] = 424114.0
+                values[63] = values[64]["EasingStyle"]
+                values[62] = values[63]["Quad"]
+                values[60] = values[60](unpackValues(values, 61, 62))
+                values[61] = {}
+                values[62] = 0.5
+                values[61]["BackgroundTransparency"] = values[62]
+                values[57] = values[57](unpackValues(values, 58, 61))
+                values[57] = values[57]
+                values[56] = values[57]["Play"]
+                values[56](unpackValues(values, 57, 57))
+                values[57] = environment.Instance
+                values[56] = values[57]["new"]
+                values[57] = "Frame"
+                values[56] = values[56](unpackValues(values, 57, 57))
+                values[57] = "KeyPanel"
+                values[56]["Name"] = values[57]
+                values[103] = 823574.0
+                values[58] = environment.Vector2
+                values[57] = values[58]["new"]
+                values[58] = 0.5
+                values[59] = 0.5
+                values[57] = values[57](unpackValues(values, 58, 59))
+                values[56]["AnchorPoint"] = values[57]
+                values[58] = environment.UDim2
+                values[57] = values[58]["fromScale"]
+                values[58] = 0.5
+                values[59] = 0.5
+                values[57] = values[57](unpackValues(values, 58, 59))
+                values[56]["Position"] = values[57]
+                values[58] = environment.UDim2
+                values[103] = 549479.0
+                values[57] = values[58]["fromOffset"]
+                values[58] = values[51]
+                values[59] = values[52]
+                values[57] = values[57](unpackValues(values, 58, 59))
+                values[56]["Size"] = values[57]
+                values[57] = values[16]
+                values[56]["BackgroundColor3"] = values[57]
+                values[57] = 0
+                values[56]["BorderSizePixel"] = values[57]
+                values[57] = true
+                values[103] = 139371.0
+                values[56]["ClipsDescendants"] = values[57]
+                values[57] = values[55]
+                values[56]["Parent"] = values[57]
+                values[58] = environment.Instance
+                values[57] = values[58]["new"]
+                values[58] = "UICorner"
+                values[59] = values[56]
+                values[57] = values[57](unpackValues(values, 58, 59))
+                values[59] = environment.UDim
+                values[58] = values[59]["new"]
+                values[59] = 0
+                values[60] = 22
+                values[103] = 812291.0
+                values[58] = values[58](unpackValues(values, 59, 60))
+                values[57]["CornerRadius"] = values[58]
+                values[58] = environment.Instance
+                values[57] = values[58]["new"]
+                values[58] = "UIGradient"
+                values[59] = values[56]
+                values[57] = values[57](unpackValues(values, 58, 59))
+                values[59] = environment.ColorSequence
+                values[103] = 443664.0
+                values[58] = values[59]["new"]
+                values[59] = {}
+                values[61] = environment.ColorSequenceKeypoint
+                values[60] = values[61]["new"]
+                values[61] = 0
+                values[62] = values[16]
+                values[60] = values[60](unpackValues(values, 61, 62))
+                values[62] = environment.ColorSequenceKeypoint
+                values[61] = values[62]["new"]
+                values[62] = 1
+                values[63] = values[15]
+                values[103] = 482337.0
+                local results = packValues(values[61](unpackValues(values, 62, 63)))
+                registerTop = 61 + results.n - 1
+                for index = 61, registerTop do values[index] = results[index - 61 + 1] end
+                for index = 1, registerTop - 59 do values[59][0 + index] = values[59 + index] end
+                values[103] = 482337
+                values[103] = 482337.0
+                values[58] = values[58](unpackValues(values, 59, 59))
+                values[57]["Color"] = values[58]
+                values[58] = 135
+                values[57]["Rotation"] = values[58]
+                values[59] = environment.Instance
+                values[58] = values[59]["new"]
+                values[59] = "UIStroke"
+                values[103] = 675808.0
+                values[60] = values[56]
+                values[58] = values[58](unpackValues(values, 59, 60))
+                values[60] = environment.Color3
+                values[59] = values[60]["fromRGB"]
+                values[60] = 60
+                values[61] = 60
+                values[62] = 60
+                values[59] = values[59](unpackValues(values, 60, 62))
+                values[58]["Color"] = values[59]
+                values[59] = 1
+                values[58]["Thickness"] = values[59]
+                values[61] = environment.Enum
+                values[60] = values[61]["ApplyStrokeMode"]
+                values[103] = 695177.0
+                values[59] = values[60]["Border"]
+                values[58]["ApplyStrokeMode"] = values[59]
+                values[60] = environment.Instance
+                values[59] = values[60]["new"]
+                values[60] = "UIScale"
+                values[61] = values[56]
+                values[59] = values[59](unpackValues(values, 60, 61))
+                values[60] = 0.7
+                values[59]["Scale"] = values[60]
+                values[60] = 1
+                values[62] = environment.workspace
+                values[61] = values[62]["CurrentCamera"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 61}
+                  cells[1] = {values, 51}
+                  cells[2] = {values, 52}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[62] = function(...) return functions["callback_53"](captured, ...) end
+                end
+                values[63] = values[62]
+                values[103] = 892242.0
+                values[63] = values[63](unpackValues(values, 64, 63))
+                values[60] = values[63]
+                values[65] = values[2]
+                values[64] = values[65]["Create"]
+                values[66] = values[59]
+                values[69] = environment.TweenInfo
+                values[67] = values[69]["new"]
+                values[68] = 0.35
+                values[72] = environment.Enum
+                values[71] = values[72]["EasingStyle"]
+                values[69] = values[71]["Back"]
+                values[72] = environment.Enum
+                values[71] = values[72]["EasingDirection"]
+                values[70] = values[71]["Out"]
+                values[67] = values[67](unpackValues(values, 68, 70))
+                values[68] = {}
+                values[103] = 28910.0
+                values[69] = values[60]
+                values[68]["Scale"] = values[69]
+                values[64] = values[64](unpackValues(values, 65, 68))
+                values[64] = values[64]
+                values[63] = values[64]["Play"]
+                values[63](unpackValues(values, 64, 64))
+                values[63] = values[61]
+                if not values[63] then
+                else
+                  values[103] = 28910.0
+                  values[65] = values[54]
+                  values[64] = #values[65]
+                  values[63] = values[64] + 1
+                  values[66] = values[61]
+                  values[65] = values[66]["GetPropertyChangedSignal"]
+                  values[67] = "ViewportSize"
+                  values[65] = values[65](unpackValues(values, 66, 67))
+                  values[65] = values[65]
+                  values[64] = values[65]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 62}
+                    cells[1] = {values, 60}
+                    cells[2] = {values, 59}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[66] = function(...) return functions["callback_54"](captured, ...) end
+                  end
+                  values[64] = values[64](unpackValues(values, 65, 66))
+                  values[103] = 12396.0
+                  values[54][values[63]] = values[64]
+                end
+                values[103] = 758159.0
+                values[64] = environment.Instance
+                values[63] = values[64]["new"]
+                values[64] = "Frame"
+                values[63] = values[63](unpackValues(values, 64, 64))
+                values[65] = environment.UDim2
+                values[64] = values[65]["new"]
+                values[65] = 1
+                values[69] = 112
+                values[66] = -values[69]
+                values[67] = 0
+                values[68] = 58
+                values[64] = values[64](unpackValues(values, 65, 68))
+                values[63]["Size"] = values[64]
+                values[103] = 393573.0
+                values[65] = environment.UDim2
+                values[64] = values[65]["fromOffset"]
+                values[65] = 28
+                values[66] = 22
+                values[64] = values[64](unpackValues(values, 65, 66))
+                values[63]["Position"] = values[64]
+                values[64] = 1
+                values[63]["BackgroundTransparency"] = values[64]
+                values[64] = true
+                values[63]["Active"] = values[64]
+                values[64] = values[56]
+                values[63]["Parent"] = values[64]
+                values[103] = 1032141.0
+                values[65] = environment.Instance
+                values[64] = values[65]["new"]
+                values[65] = "Frame"
+                values[64] = values[64](unpackValues(values, 65, 65))
+                values[66] = environment.UDim2
+                values[65] = values[66]["fromOffset"]
+                values[66] = 42
+                values[67] = 42
+                values[65] = values[65](unpackValues(values, 66, 67))
+                values[64]["Size"] = values[65]
+                values[66] = environment.UDim2
+                values[65] = values[66]["fromOffset"]
+                values[66] = 0
+                values[67] = 8
+                values[65] = values[65](unpackValues(values, 66, 67))
+                values[103] = 160318.0
+                values[64]["Position"] = values[65]
+                values[66] = environment.Color3
+                values[65] = values[66]["fromRGB"]
+                values[66] = 32
+                values[67] = 32
+                values[68] = 32
+                values[65] = values[65](unpackValues(values, 66, 68))
+                values[64]["BackgroundColor3"] = values[65]
+                values[103] = 914429.0
+                values[65] = 0
+                values[64]["BorderSizePixel"] = values[65]
+                values[65] = values[63]
+                values[64]["Parent"] = values[65]
+                values[66] = environment.Instance
+                values[65] = values[66]["new"]
+                values[66] = "UICorner"
+                values[67] = values[64]
+                values[65] = values[65](unpackValues(values, 66, 67))
+                values[103] = 483470.0
+                values[67] = environment.UDim
+                values[66] = values[67]["new"]
+                values[67] = 0
+                values[68] = 12
+                values[66] = values[66](unpackValues(values, 67, 68))
+                values[65]["CornerRadius"] = values[66]
+                values[66] = environment.Instance
+                values[65] = values[66]["new"]
+                values[66] = "UIStroke"
+                values[67] = values[64]
+                values[65] = values[65](unpackValues(values, 66, 67))
+                values[67] = environment.Color3
+                values[66] = values[67]["fromRGB"]
+                values[67] = 60
+                values[68] = 60
+                values[69] = 60
+                values[103] = 576667.0
+                values[66] = values[66](unpackValues(values, 67, 69))
+                values[65]["Color"] = values[66]
+                values[66] = 1
+                values[65]["Thickness"] = values[66]
+                values[68] = environment.Enum
+                values[67] = values[68]["ApplyStrokeMode"]
+                values[66] = values[67]["Border"]
+                values[65]["ApplyStrokeMode"] = values[66]
+                values[67] = environment.Instance
+                values[66] = values[67]["new"]
+                values[67] = "ImageLabel"
+                values[66] = values[66](unpackValues(values, 67, 67))
+                values[68] = environment.UDim2
+                values[67] = values[68]["fromScale"]
+                values[103] = 695246.0
+                values[68] = 1
+                values[69] = 1
+                values[67] = values[67](unpackValues(values, 68, 69))
+                values[66]["Size"] = values[67]
+                values[67] = 1
+                values[66]["BackgroundTransparency"] = values[67]
+                values[69] = environment.Enum
+                values[68] = values[69]["ScaleType"]
+                values[67] = values[68]["Crop"]
+                values[66]["ScaleType"] = values[67]
+                values[67] = ""
+                values[66]["Image"] = values[67]
+                values[103] = 124917.0
+                values[67] = values[64]
+                values[66]["Parent"] = values[67]
+                values[68] = environment.Instance
+                values[67] = values[68]["new"]
+                values[68] = "UICorner"
+                values[69] = values[66]
+                values[67] = values[67](unpackValues(values, 68, 69))
+                values[69] = environment.UDim
+                values[68] = values[69]["new"]
+                values[69] = 0
+                values[70] = 12
+                values[68] = values[68](unpackValues(values, 69, 70))
+                values[67]["CornerRadius"] = values[68]
+                values[68] = environment.Instance
+                values[67] = values[68]["new"]
+                values[103] = 639358.0
+                values[68] = "TextLabel"
+                values[67] = values[67](unpackValues(values, 68, 68))
+                values[69] = environment.UDim2
+                values[68] = values[69]["fromScale"]
+                values[69] = 1
+                values[70] = 1
+                values[68] = values[68](unpackValues(values, 69, 70))
+                values[67]["Size"] = values[68]
+                values[68] = 1
+                values[67]["BackgroundTransparency"] = values[68]
+                values[70] = environment.Enum
+                values[69] = values[70]["Font"]
+                values[68] = values[69]["GothamBold"]
+                values[67]["Font"] = values[68]
+                values[68] = "K"
+                values[67]["Text"] = values[68]
+                values[103] = 688121.0
+                values[68] = values[24]
+                values[67]["TextColor3"] = values[68]
+                values[68] = 20
+                values[67]["TextSize"] = values[68]
+                values[68] = false
+                values[67]["Visible"] = values[68]
+                values[68] = values[64]
+                values[67]["Parent"] = values[68]
+                values[68] = values[47]
+                values[69] = values[66]
+                values[103] = 956678.0
+                values[70] = values[67]
+                values[68](unpackValues(values, 69, 70))
+                values[69] = environment.Instance
+                values[68] = values[69]["new"]
+                values[69] = "TextLabel"
+                values[68] = values[68](unpackValues(values, 69, 69))
+                values[69] = 1
+                values[68]["BackgroundTransparency"] = values[69]
+                values[70] = environment.UDim2
+                values[69] = values[70]["fromOffset"]
+                values[70] = 56
+                values[103] = 124047.0
+                values[71] = 8
+                values[69] = values[69](unpackValues(values, 70, 71))
+                values[68]["Position"] = values[69]
+                values[70] = environment.UDim2
+                values[69] = values[70]["new"]
+                values[70] = 1
+                values[74] = 56
+                values[71] = -values[74]
+                values[72] = 0
+                values[73] = 26
+                values[103] = 628392.0
+                values[69] = values[69](unpackValues(values, 70, 73))
+                values[68]["Size"] = values[69]
+                values[71] = environment.Enum
+                values[70] = values[71]["Font"]
+                values[69] = values[70]["GothamBold"]
+                values[68]["Font"] = values[69]
+                values[69] = "KINON HUB"
+                values[68]["Text"] = values[69]
+                values[69] = values[24]
+                values[68]["TextColor3"] = values[69]
+                values[69] = 20
+                values[68]["TextSize"] = values[69]
+                values[71] = environment.Enum
+                values[70] = values[71]["TextXAlignment"]
+                values[103] = 1019331.0
+                values[69] = values[70]["Left"]
+                values[68]["TextXAlignment"] = values[69]
+                values[69] = values[63]
+                values[68]["Parent"] = values[69]
+                values[70] = environment.Instance
+                values[69] = values[70]["new"]
+                values[70] = "Frame"
+                values[69] = values[69](unpackValues(values, 70, 70))
+                values[71] = environment.UDim2
+                values[70] = values[71]["fromOffset"]
+                values[71] = 56
+                values[72] = 34
+                values[103] = 111540.0
+                values[70] = values[70](unpackValues(values, 71, 72))
+                values[69]["Position"] = values[70]
+                values[71] = environment.UDim2
+                values[70] = values[71]["new"]
+                values[71] = 1
+                values[75] = 56
+                values[72] = -values[75]
+                values[73] = 0
+                values[74] = 16
+                values[70] = values[70](unpackValues(values, 71, 74))
+                values[69]["Size"] = values[70]
+                values[70] = 1
+                values[103] = 84186.0
+                values[69]["BackgroundTransparency"] = values[70]
+                values[70] = values[63]
+                values[69]["Parent"] = values[70]
+                values[71] = environment.Instance
+                values[70] = values[71]["new"]
+                values[71] = "Frame"
+                values[70] = values[70](unpackValues(values, 71, 71))
+                values[72] = environment.UDim2
+                values[71] = values[72]["fromOffset"]
+                values[72] = 6
+                values[73] = 6
+                values[71] = values[71](unpackValues(values, 72, 73))
+                values[70]["Size"] = values[71]
+                values[103] = 994489.0
+                values[72] = environment.UDim2
+                values[71] = values[72]["fromOffset"]
+                values[72] = 0
+                values[73] = 5
+                values[71] = values[71](unpackValues(values, 72, 73))
+                values[70]["Position"] = values[71]
+                values[71] = values[49]
+                if not values[71] then
+                else
+                  values[103] = 994489.0
+                  values[71] = values[22]
+                end
+                values[103] = 337007.0
+                if values[71] then
+                else
+                  values[103] = 337007.0
+                  values[71] = values[23]
+                end
+                values[103] = 475053.0
+                values[70]["BackgroundColor3"] = values[71]
+                values[71] = 0
+                values[70]["BorderSizePixel"] = values[71]
+                values[71] = values[69]
+                values[70]["Parent"] = values[71]
+                values[72] = environment.Instance
+                values[71] = values[72]["new"]
+                values[72] = "UICorner"
+                values[73] = values[70]
+                values[71] = values[71](unpackValues(values, 72, 73))
+                values[73] = environment.UDim
+                values[103] = 584782.0
+                values[72] = values[73]["new"]
+                values[73] = 1
+                values[74] = 0
+                values[72] = values[72](unpackValues(values, 73, 74))
+                values[71]["CornerRadius"] = values[72]
+                values[72] = environment.Instance
+                values[71] = values[72]["new"]
+                values[72] = "TextLabel"
+                values[71] = values[71](unpackValues(values, 72, 72))
+                values[72] = 1
+                values[71]["BackgroundTransparency"] = values[72]
+                values[73] = environment.UDim2
+                values[72] = values[73]["fromOffset"]
+                values[73] = 12
+                values[74] = 0
+                values[72] = values[72](unpackValues(values, 73, 74))
+                values[103] = 571129.0
+                values[71]["Position"] = values[72]
+                values[73] = environment.UDim2
+                values[72] = values[73]["new"]
+                values[73] = 1
+                values[77] = 12
+                values[74] = -values[77]
+                values[75] = 1
+                values[76] = 0
+                values[72] = values[72](unpackValues(values, 73, 76))
+                values[71]["Size"] = values[72]
+                values[74] = environment.Enum
+                values[73] = values[74]["Font"]
+                values[72] = values[73]["GothamMedium"]
+                values[71]["Font"] = values[72]
+                values[103] = 780365.0
+                values[72] = values[49]
+                if not values[72] then
+                else
+                  values[103] = 780365.0
+                  values[72] = "Violence District"
+                end
+                values[103] = 221109.0
+                if values[72] then
+                else
+                  values[103] = 221109.0
+                  values[72] = "Game not supported"
+                end
+                values[103] = 855795.0
+                values[71]["Text"] = values[72]
+                values[72] = values[49]
+                if not values[72] then
+                else
+                  values[103] = 855795.0
+                  values[73] = environment.Color3
+                  values[72] = values[73]["fromRGB"]
+                  values[73] = 175
+                  values[74] = 175
+                  values[75] = 175
+                  values[72] = values[72](unpackValues(values, 73, 75))
+                end
+                values[103] = 458695.0
+                if values[72] then
+                else
+                  values[103] = 458695.0
+                  values[72] = values[23]
+                end
+                values[103] = 642323.0
+                values[71]["TextColor3"] = values[72]
+                values[72] = 10
+                values[71]["TextSize"] = values[72]
+                values[74] = environment.Enum
+                values[73] = values[74]["TextXAlignment"]
+                values[72] = values[73]["Left"]
+                values[71]["TextXAlignment"] = values[72]
+                values[72] = values[69]
+                values[71]["Parent"] = values[72]
+                values[73] = environment.Instance
+                values[72] = values[73]["new"]
+                values[73] = "TextButton"
+                values[103] = 458093.0
+                values[72] = values[72](unpackValues(values, 73, 73))
+                values[74] = environment.UDim2
+                values[73] = values[74]["fromOffset"]
+                values[74] = 32
+                values[75] = 32
+                values[73] = values[73](unpackValues(values, 74, 75))
+                values[72]["Size"] = values[73]
+                values[74] = environment.UDim2
+                values[73] = values[74]["new"]
+                values[74] = 1
+                values[78] = 60
+                values[75] = -values[78]
+                values[76] = 0
+                values[77] = 30
+                values[73] = values[73](unpackValues(values, 74, 77))
+                values[103] = 273347.0
+                values[72]["Position"] = values[73]
+                values[74] = environment.Color3
+                values[73] = values[74]["fromRGB"]
+                values[74] = 32
+                values[75] = 32
+                values[76] = 32
+                values[73] = values[73](unpackValues(values, 74, 76))
+                values[72]["BackgroundColor3"] = values[73]
+                values[73] = 0
+                values[72]["BorderSizePixel"] = values[73]
+                values[103] = 205453.0
+                values[73] = "X"
+                values[72]["Text"] = values[73]
+                values[74] = environment.Color3
+                values[73] = values[74]["fromRGB"]
+                values[74] = 175
+                values[75] = 175
+                values[76] = 175
+                values[73] = values[73](unpackValues(values, 74, 76))
+                values[72]["TextColor3"] = values[73]
+                values[75] = environment.Enum
+                values[103] = 261324.0
+                values[74] = values[75]["Font"]
+                values[73] = values[74]["GothamBold"]
+                values[72]["Font"] = values[73]
+                values[73] = 14
+                values[72]["TextSize"] = values[73]
+                values[73] = false
+                values[72]["AutoButtonColor"] = values[73]
+                values[73] = values[56]
+                values[103] = 719446.0
+                values[72]["Parent"] = values[73]
+                values[74] = environment.Instance
+                values[73] = values[74]["new"]
+                values[74] = "UICorner"
+                values[75] = values[72]
+                values[73] = values[73](unpackValues(values, 74, 75))
+                values[75] = environment.UDim
+                values[74] = values[75]["new"]
+                values[75] = 0
+                values[76] = 10
+                values[74] = values[74](unpackValues(values, 75, 76))
+                values[73]["CornerRadius"] = values[74]
+                values[74] = environment.Instance
+                values[73] = values[74]["new"]
+                values[74] = "UIStroke"
+                values[103] = 741478.0
+                values[75] = values[72]
+                values[73] = values[73](unpackValues(values, 74, 75))
+                values[74] = values[25]
+                values[73]["Color"] = values[74]
+                values[74] = 1
+                values[73]["Thickness"] = values[74]
+                values[76] = environment.Enum
+                values[75] = values[76]["ApplyStrokeMode"]
+                values[103] = 975727.0
+                values[74] = values[75]["Border"]
+                values[73]["ApplyStrokeMode"] = values[74]
+                values[75] = values[72]["MouseEnter"]
+                values[75] = values[75]
+                values[74] = values[75]["Connect"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 2}
+                  cells[1] = {values, 72}
+                  cells[2] = {values, 24}
+                  cells[3] = {values, 73}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[76] = function(...) return functions["callback_55"](captured, ...) end
+                end
+                values[74](unpackValues(values, 75, 76))
+                values[75] = values[72]["MouseLeave"]
+                values[75] = values[75]
+                values[74] = values[75]["Connect"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 2}
+                  cells[1] = {values, 72}
+                  cells[2] = {values, 73}
+                  cells[3] = {values, 25}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[76] = function(...) return functions["callback_56"](captured, ...) end
+                end
+                values[74](unpackValues(values, 75, 76))
+                values[103] = 521986.0
+                values[75] = environment.Instance
+                values[74] = values[75]["new"]
+                values[75] = "Frame"
+                values[74] = values[74](unpackValues(values, 75, 75))
+                values[76] = environment.UDim2
+                values[75] = values[76]["new"]
+                values[76] = 1
+                values[80] = 56
+                values[103] = 168778.0
+                values[77] = -values[80]
+                values[78] = 0
+                values[79] = 1
+                values[75] = values[75](unpackValues(values, 76, 79))
+                values[74]["Size"] = values[75]
+                values[76] = environment.UDim2
+                values[75] = values[76]["fromOffset"]
+                values[76] = 28
+                values[77] = 94
+                values[103] = 693642.0
+                values[75] = values[75](unpackValues(values, 76, 77))
+                values[74]["Position"] = values[75]
+                values[75] = values[25]
+                values[74]["BackgroundColor3"] = values[75]
+                values[75] = 0
+                values[74]["BorderSizePixel"] = values[75]
+                values[75] = values[56]
+                values[74]["Parent"] = values[75]
+                values[75] = values[49]
+                values[103] = 357082.0
+                if values[75] then
+                else
+                  values[103] = 357082.0
+                  values[76] = environment.Instance
+                  values[75] = values[76]["new"]
+                  values[76] = "Frame"
+                  values[75] = values[75](unpackValues(values, 76, 76))
+                  values[77] = environment.UDim2
+                  values[76] = values[77]["fromOffset"]
+                  values[77] = 28
+                  values[78] = 106
+                  values[103] = 45111.0
+                  values[76] = values[76](unpackValues(values, 77, 78))
+                  values[75]["Position"] = values[76]
+                  values[77] = environment.UDim2
+                  values[76] = values[77]["new"]
+                  values[77] = 1
+                  values[81] = 56
+                  values[78] = -values[81]
+                  values[79] = 0
+                  values[80] = 34
+                  values[76] = values[76](unpackValues(values, 77, 80))
+                  values[75]["Size"] = values[76]
+                  values[103] = 827933.0
+                  values[77] = environment.Color3
+                  values[76] = values[77]["fromRGB"]
+                  values[77] = 38
+                  values[78] = 16
+                  values[79] = 16
+                  values[76] = values[76](unpackValues(values, 77, 79))
+                  values[75]["BackgroundColor3"] = values[76]
+                  values[76] = 0
+                  values[75]["BorderSizePixel"] = values[76]
+                  values[76] = values[56]
+                  values[75]["Parent"] = values[76]
+                  values[77] = environment.Instance
+                  values[103] = 936000.0
+                  values[76] = values[77]["new"]
+                  values[77] = "UICorner"
+                  values[78] = values[75]
+                  values[76] = values[76](unpackValues(values, 77, 78))
+                  values[78] = environment.UDim
+                  values[77] = values[78]["new"]
+                  values[78] = 0
+                  values[79] = 10
+                  values[77] = values[77](unpackValues(values, 78, 79))
+                  values[76]["CornerRadius"] = values[77]
+                  values[77] = environment.Instance
+                  values[76] = values[77]["new"]
+                  values[77] = "UIStroke"
+                  values[78] = values[75]
+                  values[76] = values[76](unpackValues(values, 77, 78))
+                  values[78] = environment.Color3
+                  values[103] = 712264.0
+                  values[77] = values[78]["fromRGB"]
+                  values[78] = 90
+                  values[79] = 30
+                  values[80] = 30
+                  values[77] = values[77](unpackValues(values, 78, 80))
+                  values[76]["Color"] = values[77]
+                  values[77] = 1
+                  values[76]["Thickness"] = values[77]
+                  values[79] = environment.Enum
+                  values[78] = values[79]["ApplyStrokeMode"]
+                  values[77] = values[78]["Border"]
+                  values[76]["ApplyStrokeMode"] = values[77]
+                  values[78] = environment.Instance
+                  values[77] = values[78]["new"]
+                  values[103] = 813365.0
+                  values[78] = "TextLabel"
+                  values[77] = values[77](unpackValues(values, 78, 78))
+                  values[78] = 1
+                  values[77]["BackgroundTransparency"] = values[78]
+                  values[79] = environment.UDim2
+                  values[78] = values[79]["fromScale"]
+                  values[79] = 1
+                  values[80] = 1
+                  values[103] = 876432.0
+                  values[78] = values[78](unpackValues(values, 79, 80))
+                  values[77]["Size"] = values[78]
+                  values[80] = environment.Enum
+                  values[79] = values[80]["Font"]
+                  values[78] = values[79]["GothamMedium"]
+                  values[77]["Font"] = values[78]
+                  values[78] = "This script only works in Violence District"
+                  values[77]["Text"] = values[78]
+                  values[79] = environment.Color3
+                  values[78] = values[79]["fromRGB"]
+                  values[79] = 255
+                  values[80] = 170
+                  values[81] = 170
+                  values[78] = values[78](unpackValues(values, 79, 81))
+                  values[77]["TextColor3"] = values[78]
+                  values[78] = 11
+                  values[103] = 227656.0
+                  values[77]["TextSize"] = values[78]
+                  values[78] = values[75]
+                  values[77]["Parent"] = values[78]
+                end
+                values[103] = 342154.0
+                values[76] = environment.Instance
+                values[75] = values[76]["new"]
+                values[76] = "TextLabel"
+                values[75] = values[75](unpackValues(values, 76, 76))
+                values[76] = 1
+                values[75]["BackgroundTransparency"] = values[76]
+                values[77] = environment.UDim2
+                values[76] = values[77]["fromOffset"]
+                values[77] = 30
+                values[78] = 108 + values[50]
+                values[76] = values[76](unpackValues(values, 77, 78))
+                values[75]["Position"] = values[76]
+                values[77] = environment.UDim2
+                values[76] = values[77]["new"]
+                values[77] = 1
+                values[103] = 308407.0
+                values[81] = 60
+                values[78] = -values[81]
+                values[79] = 0
+                values[80] = 14
+                values[76] = values[76](unpackValues(values, 77, 80))
+                values[75]["Size"] = values[76]
+                values[78] = environment.Enum
+                values[77] = values[78]["Font"]
+                values[76] = values[77]["GothamBold"]
+                values[75]["Font"] = values[76]
+                values[76] = "ACCESS KEY"
+                values[103] = 558284.0
+                values[75]["Text"] = values[76]
+                values[76] = values[20]
+                values[75]["TextColor3"] = values[76]
+                values[76] = 9
+                values[75]["TextSize"] = values[76]
+                values[78] = environment.Enum
+                values[77] = values[78]["TextXAlignment"]
+                values[76] = values[77]["Left"]
+                values[75]["TextXAlignment"] = values[76]
+                values[76] = values[56]
+                values[75]["Parent"] = values[76]
+                values[103] = 809077.0
+                values[77] = environment.Instance
+                values[76] = values[77]["new"]
+                values[77] = "Frame"
+                values[76] = values[76](unpackValues(values, 77, 77))
+                values[78] = environment.UDim2
+                values[77] = values[78]["fromOffset"]
+                values[78] = 28
+                values[79] = 126 + values[50]
+                values[77] = values[77](unpackValues(values, 78, 79))
+                values[76]["Position"] = values[77]
+                values[78] = environment.UDim2
+                values[77] = values[78]["new"]
+                values[103] = 969666.0
+                values[78] = 1
+                values[82] = 56
+                values[79] = -values[82]
+                values[80] = 0
+                values[81] = 46
+                values[77] = values[77](unpackValues(values, 78, 81))
+                values[76]["Size"] = values[77]
+                values[77] = values[18]
+                values[76]["BackgroundColor3"] = values[77]
+                values[77] = 0
+                values[76]["BorderSizePixel"] = values[77]
+                values[77] = values[56]
+                values[76]["Parent"] = values[77]
+                values[78] = environment.Instance
+                values[77] = values[78]["new"]
+                values[103] = 178280.0
+                values[78] = "UICorner"
+                values[79] = values[76]
+                values[77] = values[77](unpackValues(values, 78, 79))
+                values[79] = environment.UDim
+                values[78] = values[79]["new"]
+                values[79] = 0
+                values[80] = 12
+                values[78] = values[78](unpackValues(values, 79, 80))
+                values[77]["CornerRadius"] = values[78]
+                values[78] = environment.Instance
+                values[77] = values[78]["new"]
+                values[103] = 508180.0
+                values[78] = "UIStroke"
+                values[79] = values[76]
+                values[77] = values[77](unpackValues(values, 78, 79))
+                values[78] = values[25]
+                values[77]["Color"] = values[78]
+                values[78] = 1
+                values[77]["Thickness"] = values[78]
+                values[80] = environment.Enum
+                values[79] = values[80]["ApplyStrokeMode"]
+                values[78] = values[79]["Border"]
+                values[77]["ApplyStrokeMode"] = values[78]
+                values[79] = environment.Instance
+                values[78] = values[79]["new"]
+                values[79] = "TextBox"
+                values[78] = values[78](unpackValues(values, 79, 79))
+                values[103] = 675344.0
+                values[80] = environment.UDim2
+                values[79] = values[80]["new"]
+                values[80] = 1
+                values[84] = 28
+                values[81] = -values[84]
+                values[82] = 1
+                values[83] = 0
+                values[79] = values[79](unpackValues(values, 80, 83))
+                values[78]["Size"] = values[79]
+                values[80] = environment.UDim2
+                values[79] = values[80]["fromOffset"]
+                values[103] = 100105.0
+                values[80] = 14
+                values[81] = 0
+                values[79] = values[79](unpackValues(values, 80, 81))
+                values[78]["Position"] = values[79]
+                values[79] = 1
+                values[78]["BackgroundTransparency"] = values[79]
+                values[79] = false
+                values[78]["ClearTextOnFocus"] = values[79]
+                values[103] = 710704.0
+                values[79] = "Paste your key"
+                values[78]["PlaceholderText"] = values[79]
+                values[79] = values[21]
+                values[78]["PlaceholderColor3"] = values[79]
+                values[79] = values[37]
+                values[79] = values[79](unpackValues(values, 80, 79))
+                if values[79] then
+                else
+                  values[103] = 710704.0
+                  values[79] = ""
+                end
+                values[103] = 382293.0
+                values[78]["Text"] = values[79]
+                values[79] = values[19]
+                values[78]["TextColor3"] = values[79]
+                values[81] = environment.Enum
+                values[80] = values[81]["Font"]
+                values[79] = values[80]["Code"]
+                values[78]["Font"] = values[79]
+                values[79] = 13
+                values[78]["TextSize"] = values[79]
+                values[81] = environment.Enum
+                values[80] = values[81]["TextXAlignment"]
+                values[103] = 165860.0
+                values[79] = values[80]["Left"]
+                values[78]["TextXAlignment"] = values[79]
+                values[81] = environment.Enum
+                values[80] = values[81]["TextTruncate"]
+                values[79] = values[80]["AtEnd"]
+                values[78]["TextTruncate"] = values[79]
+                values[79] = values[76]
+                values[78]["Parent"] = values[79]
+                values[103] = 325019.0
+                values[80] = values[78]["Focused"]
+                values[80] = values[80]
+                values[79] = values[80]["Connect"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 2}
+                  cells[1] = {values, 77}
+                  cells[2] = {values, 24}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[81] = function(...) return functions["callback_57"](captured, ...) end
+                end
+                values[79](unpackValues(values, 80, 81))
+                values[80] = values[78]["FocusLost"]
+                values[80] = values[80]
+                values[79] = values[80]["Connect"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 2}
+                  cells[1] = {values, 77}
+                  cells[2] = {values, 25}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[81] = function(...) return functions["callback_58"](captured, ...) end
+                end
+                values[79](unpackValues(values, 80, 81))
+                values[103] = 1033000.0
+                values[80] = environment.Instance
+                values[79] = values[80]["new"]
+                values[80] = "Frame"
+                values[79] = values[79](unpackValues(values, 80, 80))
+                values[81] = environment.UDim2
+                values[80] = values[81]["fromOffset"]
+                values[81] = 28
+                values[82] = 186 + values[50]
+                values[103] = 358352.0
+                values[80] = values[80](unpackValues(values, 81, 82))
+                values[79]["Position"] = values[80]
+                values[81] = environment.UDim2
+                values[80] = values[81]["new"]
+                values[81] = 1
+                values[85] = 56
+                values[82] = -values[85]
+                values[83] = 0
+                values[84] = 42
+                values[80] = values[80](unpackValues(values, 81, 84))
+                values[103] = 823199.0
+                values[79]["Size"] = values[80]
+                values[80] = 1
+                values[79]["BackgroundTransparency"] = values[80]
+                values[80] = values[56]
+                values[79]["Parent"] = values[80]
+                values[81] = environment.Instance
+                values[80] = values[81]["new"]
+                values[81] = "UIListLayout"
+                values[82] = values[79]
+                values[80] = values[80](unpackValues(values, 81, 82))
+                values[83] = environment.Enum
+                values[82] = values[83]["FillDirection"]
+                values[81] = values[82]["Horizontal"]
+                values[80]["FillDirection"] = values[81]
+                values[103] = 909043.0
+                values[82] = environment.UDim
+                values[81] = values[82]["new"]
+                values[82] = 0
+                values[83] = 8
+                values[81] = values[81](unpackValues(values, 82, 83))
+                values[80]["Padding"] = values[81]
+                values[83] = environment.Enum
+                values[82] = values[83]["HorizontalAlignment"]
+                values[81] = values[82]["Center"]
+                values[80]["HorizontalAlignment"] = values[81]
+                do
+                  local cells = {}
+                  cells[0] = {values, 2}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[81] = function(...) return functions["callback_59"](captured, ...) end
+                end
+                values[103] = 364490.0
+                values[83] = environment.Instance
+                values[82] = values[83]["new"]
+                values[83] = "TextButton"
+                values[82] = values[82](unpackValues(values, 83, 83))
+                values[84] = environment.UDim2
+                values[83] = values[84]["new"]
+                values[84] = 0.5
+                values[88] = 4
+                values[85] = -values[88]
+                values[86] = 1
+                values[103] = 772591.0
+                values[87] = 0
+                values[83] = values[83](unpackValues(values, 84, 87))
+                values[82]["Size"] = values[83]
+                values[83] = values[24]
+                values[82]["BackgroundColor3"] = values[83]
+                values[83] = 0
+                values[82]["BorderSizePixel"] = values[83]
+                values[83] = "GET FREE KEY"
+                values[82]["Text"] = values[83]
+                values[84] = environment.Color3
+                values[83] = values[84]["fromRGB"]
+                values[84] = 10
+                values[85] = 10
+                values[86] = 10
+                values[83] = values[83](unpackValues(values, 84, 86))
+                values[82]["TextColor3"] = values[83]
+                values[103] = 411674.0
+                values[85] = environment.Enum
+                values[84] = values[85]["Font"]
+                values[83] = values[84]["GothamBold"]
+                values[82]["Font"] = values[83]
+                values[83] = 11
+                values[82]["TextSize"] = values[83]
+                values[83] = false
+                values[82]["AutoButtonColor"] = values[83]
+                values[83] = values[79]
+                values[82]["Parent"] = values[83]
+                values[84] = environment.Instance
+                values[103] = 7309.0
+                values[83] = values[84]["new"]
+                values[84] = "UICorner"
+                values[85] = values[82]
+                values[83] = values[83](unpackValues(values, 84, 85))
+                values[85] = environment.UDim
+                values[84] = values[85]["new"]
+                values[85] = 0
+                values[86] = 12
+                values[103] = 634896.0
+                values[84] = values[84](unpackValues(values, 85, 86))
+                values[83]["CornerRadius"] = values[84]
+                values[83] = values[81]
+                values[84] = values[82]
+                values[83](unpackValues(values, 84, 84))
+                values[84] = environment.Instance
+                values[83] = values[84]["new"]
+                values[84] = "TextButton"
+                values[83] = values[83](unpackValues(values, 84, 84))
+                values[103] = 535003.0
+                values[85] = environment.UDim2
+                values[84] = values[85]["new"]
+                values[85] = 0.5
+                values[89] = 4
+                values[86] = -values[89]
+                values[87] = 1
+                values[88] = 0
+                values[84] = values[84](unpackValues(values, 85, 88))
+                values[83]["Size"] = values[84]
+                values[85] = environment.Color3
+                values[84] = values[85]["fromRGB"]
+                values[85] = 32
+                values[86] = 32
+                values[87] = 32
+                values[84] = values[84](unpackValues(values, 85, 87))
+                values[103] = 790286.0
+                values[83]["BackgroundColor3"] = values[84]
+                values[84] = 0
+                values[83]["BorderSizePixel"] = values[84]
+                values[84] = "UNLOCK"
+                values[83]["Text"] = values[84]
+                values[84] = values[19]
+                values[83]["TextColor3"] = values[84]
+                values[86] = environment.Enum
+                values[103] = 70703.0
+                values[85] = values[86]["Font"]
+                values[84] = values[85]["GothamBold"]
+                values[83]["Font"] = values[84]
+                values[84] = 11
+                values[83]["TextSize"] = values[84]
+                values[84] = false
+                values[83]["AutoButtonColor"] = values[84]
+                values[84] = values[79]
+                values[83]["Parent"] = values[84]
+                values[85] = environment.Instance
+                values[84] = values[85]["new"]
+                values[103] = 424459.0
+                values[85] = "UICorner"
+                values[86] = values[83]
+                values[84] = values[84](unpackValues(values, 85, 86))
+                values[86] = environment.UDim
+                values[85] = values[86]["new"]
+                values[86] = 0
+                values[87] = 12
+                values[85] = values[85](unpackValues(values, 86, 87))
+                values[103] = 364475.0
+                values[84]["CornerRadius"] = values[85]
+                values[85] = environment.Instance
+                values[84] = values[85]["new"]
+                values[85] = "UIStroke"
+                values[86] = values[83]
+                values[84] = values[84](unpackValues(values, 85, 86))
+                values[85] = values[25]
+                values[84]["Color"] = values[85]
+                values[85] = 1
+                values[84]["Thickness"] = values[85]
+                values[87] = environment.Enum
+                values[103] = 746043.0
+                values[86] = values[87]["ApplyStrokeMode"]
+                values[85] = values[86]["Border"]
+                values[84]["ApplyStrokeMode"] = values[85]
+                values[85] = values[81]
+                values[86] = values[83]
+                values[85](unpackValues(values, 86, 86))
+                values[86] = environment.Instance
+                values[85] = values[86]["new"]
+                values[86] = "Frame"
+                values[85] = values[85](unpackValues(values, 86, 86))
+                values[87] = environment.UDim2
+                values[86] = values[87]["fromOffset"]
+                values[87] = 28
+                values[88] = 242 + values[50]
+                values[86] = values[86](unpackValues(values, 87, 88))
+                values[103] = 835025.0
+                values[85]["Position"] = values[86]
+                values[87] = environment.UDim2
+                values[86] = values[87]["new"]
+                values[87] = 1
+                values[91] = 56
+                values[88] = -values[91]
+                values[89] = 0
+                values[90] = 36
+                values[86] = values[86](unpackValues(values, 87, 90))
+                values[103] = 764245.0
+                values[85]["Size"] = values[86]
+                values[86] = values[18]
+                values[85]["BackgroundColor3"] = values[86]
+                values[86] = 0
+                values[85]["BorderSizePixel"] = values[86]
+                values[86] = values[56]
+                values[85]["Parent"] = values[86]
+                values[87] = environment.Instance
+                values[86] = values[87]["new"]
+                values[87] = "UICorner"
+                values[88] = values[85]
+                values[86] = values[86](unpackValues(values, 87, 88))
+                values[88] = environment.UDim
+                values[87] = values[88]["new"]
+                values[88] = 0
+                values[89] = 10
+                values[103] = 112835.0
+                values[87] = values[87](unpackValues(values, 88, 89))
+                values[86]["CornerRadius"] = values[87]
+                values[87] = environment.Instance
+                values[86] = values[87]["new"]
+                values[87] = "UIStroke"
+                values[88] = values[85]
+                values[86] = values[86](unpackValues(values, 87, 88))
+                values[87] = values[25]
+                values[86]["Color"] = values[87]
+                values[87] = 1
+                values[103] = 423649.0
+                values[86]["Thickness"] = values[87]
+                values[89] = environment.Enum
+                values[88] = values[89]["ApplyStrokeMode"]
+                values[87] = values[88]["Border"]
+                values[86]["ApplyStrokeMode"] = values[87]
+                values[88] = environment.Instance
+                values[87] = values[88]["new"]
+                values[88] = "Frame"
+                values[87] = values[87](unpackValues(values, 88, 88))
+                values[103] = 177560.0
+                values[89] = environment.UDim2
+                values[88] = values[89]["fromOffset"]
+                values[89] = 6
+                values[90] = 6
+                values[88] = values[88](unpackValues(values, 89, 90))
+                values[87]["Size"] = values[88]
+                values[89] = environment.UDim2
+                values[88] = values[89]["fromOffset"]
+                values[89] = 14
+                values[90] = 15
+                values[88] = values[88](unpackValues(values, 89, 90))
+                values[87]["Position"] = values[88]
+                values[88] = values[21]
+                values[87]["BackgroundColor3"] = values[88]
+                values[88] = 0
+                values[103] = 779825.0
+                values[87]["BorderSizePixel"] = values[88]
+                values[88] = values[85]
+                values[87]["Parent"] = values[88]
+                values[89] = environment.Instance
+                values[88] = values[89]["new"]
+                values[89] = "UICorner"
+                values[90] = values[87]
+                values[88] = values[88](unpackValues(values, 89, 90))
+                values[90] = environment.UDim
+                values[89] = values[90]["new"]
+                values[90] = 1
+                values[91] = 0
+                values[89] = values[89](unpackValues(values, 90, 91))
+                values[88]["CornerRadius"] = values[89]
+                values[89] = environment.Instance
+                values[103] = 1046794.0
+                values[88] = values[89]["new"]
+                values[89] = "TextLabel"
+                values[88] = values[88](unpackValues(values, 89, 89))
+                values[89] = 1
+                values[88]["BackgroundTransparency"] = values[89]
+                values[90] = environment.UDim2
+                values[89] = values[90]["fromOffset"]
+                values[90] = 28
+                values[91] = 0
+                values[89] = values[89](unpackValues(values, 90, 91))
+                values[88]["Position"] = values[89]
+                values[103] = 82684.0
+                values[90] = environment.UDim2
+                values[89] = values[90]["new"]
+                values[90] = 1
+                values[94] = 40
+                values[91] = -values[94]
+                values[92] = 1
+                values[93] = 0
+                values[89] = values[89](unpackValues(values, 90, 93))
+                values[103] = 357277.0
+                values[88]["Size"] = values[89]
+                values[91] = environment.Enum
+                values[90] = values[91]["Font"]
+                values[89] = values[90]["Code"]
+                values[88]["Font"] = values[89]
+                values[89] = "No active key"
+                values[88]["Text"] = values[89]
+                values[89] = values[21]
+                values[88]["TextColor3"] = values[89]
+                values[89] = 12
+                values[88]["TextSize"] = values[89]
+                values[91] = environment.Enum
+                values[90] = values[91]["TextXAlignment"]
+                values[89] = values[90]["Left"]
+                values[88]["TextXAlignment"] = values[89]
+                values[89] = values[85]
+                values[103] = 620493.0
+                values[88]["Parent"] = values[89]
+                values[90] = environment.Instance
+                values[89] = values[90]["new"]
+                values[90] = "TextLabel"
+                values[89] = values[89](unpackValues(values, 90, 90))
+                values[90] = 1
+                values[89]["BackgroundTransparency"] = values[90]
+                values[91] = environment.UDim2
+                values[90] = values[91]["new"]
+                values[91] = 0
+                values[103] = 508057.0
+                values[92] = 28
+                values[93] = 1
+                values[95] = 46
+                values[94] = -values[95]
+                values[90] = values[90](unpackValues(values, 91, 94))
+                values[89]["Position"] = values[90]
+                values[91] = environment.UDim2
+                values[90] = values[91]["new"]
+                values[103] = 247217.0
+                values[91] = 1
+                values[95] = 56
+                values[92] = -values[95]
+                values[93] = 0
+                values[94] = 18
+                values[90] = values[90](unpackValues(values, 91, 94))
+                values[89]["Size"] = values[90]
+                values[92] = environment.Enum
+                values[91] = values[92]["Font"]
+                values[90] = values[91]["GothamMedium"]
+                values[89]["Font"] = values[90]
+                values[103] = 802171.0
+                values[90] = values[49]
+                if not values[90] then
+                else
+                  values[103] = 802171.0
+                  values[90] = "Keys are shared"
+                end
+                values[103] = 26759.0
+                if values[90] then
+                else
+                  values[103] = 26759.0
+                  values[90] = "Open Violence District to unlock"
+                end
+                values[103] = 508575.0
+                values[89]["Text"] = values[90]
+                values[90] = values[20]
+                values[89]["TextColor3"] = values[90]
+                values[90] = 10
+                values[89]["TextSize"] = values[90]
+                values[92] = environment.Enum
+                values[91] = values[92]["TextXAlignment"]
+                values[90] = values[91]["Center"]
+                values[89]["TextXAlignment"] = values[90]
+                values[90] = values[56]
+                values[89]["Parent"] = values[90]
+                values[91] = environment.Instance
+                values[90] = values[91]["new"]
+                values[91] = "TextLabel"
+                values[90] = values[90](unpackValues(values, 91, 91))
+                values[103] = 60040.0
+                values[91] = 1
+                values[90]["BackgroundTransparency"] = values[91]
+                values[92] = environment.UDim2
+                values[91] = values[92]["new"]
+                values[92] = 0
+                values[93] = 28
+                values[94] = 1
+                values[96] = 24
+                values[95] = -values[96]
+                values[103] = 577688.0
+                values[91] = values[91](unpackValues(values, 92, 95))
+                values[90]["Position"] = values[91]
+                values[92] = environment.UDim2
+                values[91] = values[92]["new"]
+                values[92] = 1
+                values[96] = 56
+                values[93] = -values[96]
+                values[94] = 0
+                values[103] = 973419.0
+                values[95] = 16
+                values[91] = values[91](unpackValues(values, 92, 95))
+                values[90]["Size"] = values[91]
+                values[93] = environment.Enum
+                values[92] = values[93]["Font"]
+                values[91] = values[92]["Code"]
+                values[90]["Font"] = values[91]
+                values[91] = "KINON HUB"
+                values[90]["Text"] = values[91]
+                values[91] = values[21]
+                values[90]["TextColor3"] = values[91]
+                values[91] = 9
+                values[90]["TextSize"] = values[91]
+                values[103] = 156679.0
+                values[93] = environment.Enum
+                values[92] = values[93]["TextXAlignment"]
+                values[91] = values[92]["Center"]
+                values[90]["TextXAlignment"] = values[91]
+                values[91] = values[56]
+                values[90]["Parent"] = values[91]
+                do
+                  local cells = {}
+                  cells[0] = {values, 2}
+                  cells[1] = {values, 59}
+                  cells[2] = {values, 55}
+                  cells[3] = {values, 53}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[91] = function(...) return functions["callback_62"](captured, ...) end
+                end
+                do
+                  local cells = {}
+                  cells[0] = {values, 29}
+                  cells[1] = {values, 78}
+                  cells[2] = {values, 27}
+                  cells[3] = {values, 33}
+                  cells[4] = {values, 38}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[92] = function(...) return functions["callback_64"](captured, ...) end
+                end
+                values[93] = environment.pcall
+                do
+                  local cells = {}
+                  cells[0] = {values, 92}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[94] = function(...) return functions["callback_65"](captured, ...) end
+                end
+                values[93](unpackValues(values, 94, 94))
+                values[93] = environment.pcall
+                values[103] = 365507.0
+                do
+                  local cells = {}
+                  cells[0] = {values, 5}
+                  cells[1] = {values, 92}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[94] = function(...) return functions["callback_67"](captured, ...) end
+                end
+                values[93](unpackValues(values, 94, 94))
+                do
+                  local cells = {}
+                  cells[0] = {values, 89}
+                  cells[1] = {values, 22}
+                  cells[2] = {values, 23}
+                  cells[3] = {values, 20}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[93] = function(...) return functions["callback_69"](captured, ...) end
+                end
+                do
+                  local cells = {}
+                  cells[0] = {values, 39}
+                  cells[1] = {values, 88}
+                  cells[2] = {values, 31}
+                  cells[3] = {values, 22}
+                  cells[4] = {values, 87}
+                  cells[5] = {values, 36}
+                  cells[6] = {values, 30}
+                  cells[7] = {values, 21}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[94] = function(...) return functions["callback_70"](captured, ...) end
+                end
+                do
+                  local cells = {}
+                  cells[0] = {values, 42}
+                  cells[1] = {values, 43}
+                  cells[2] = {values, 39}
+                  cells[3] = {values, 82}
+                  cells[4] = {values, 31}
+                  cells[5] = {values, 21}
+                  cells[6] = {values, 24}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[95] = function(...) return functions["callback_71"](captured, ...) end
+                end
+                values[97] = environment.task
+                values[96] = values[97]["spawn"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 53}
+                  cells[1] = {values, 94}
+                  cells[2] = {values, 95}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[97] = function(...) return functions["callback_72"](captured, ...) end
+                end
+                values[96](unpackValues(values, 97, 97))
+                values[96] = false
+                do
+                  local cells = {}
+                  cells[0] = {values, 96}
+                  cells[1] = {values, 38}
+                  cells[2] = {values, 83}
+                  cells[3] = {values, 22}
+                  cells[4] = {values, 2}
+                  cells[5] = {values, 84}
+                  cells[6] = {values, 93}
+                  cells[7] = {values, 34}
+                  cells[8] = {values, 94}
+                  cells[9] = {values, 32}
+                  cells[10] = {values, 19}
+                  cells[11] = {values, 25}
+                  cells[12] = {values, 8}
+                  cells[13] = {values, 91}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[97] = function(...) return functions["callback_73"](captured, ...) end
+                end
+                values[98] = false
+                values[103] = 193014.0
+                values[100] = values[82]["MouseButton1Click"]
+                values[100] = values[100]
+                values[99] = values[100]["Connect"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 98}
+                  cells[1] = {values, 43}
+                  cells[2] = {values, 34}
+                  cells[3] = {values, 42}
+                  cells[4] = {values, 82}
+                  cells[5] = {values, 33}
+                  cells[6] = {values, 27}
+                  cells[7] = {values, 78}
+                  cells[8] = {values, 41}
+                  cells[9] = {values, 38}
+                  cells[10] = {values, 93}
+                  cells[11] = {values, 95}
+                  cells[12] = {values, 94}
+                  cells[13] = {values, 97}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[101] = function(...) return functions["callback_76"](captured, ...) end
+                end
+                values[99](unpackValues(values, 100, 101))
+                values[100] = values[83]["MouseButton1Click"]
+                values[100] = values[100]
+                values[99] = values[100]["Connect"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 98}
+                  cells[1] = {values, 83}
+                  cells[2] = {values, 93}
+                  cells[3] = {values, 37}
+                  cells[4] = {values, 29}
+                  cells[5] = {values, 78}
+                  cells[6] = {values, 39}
+                  cells[7] = {values, 97}
+                  cells[8] = {values, 27}
+                  cells[9] = {values, 33}
+                  cells[10] = {values, 38}
+                  cells[11] = {values, 34}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[101] = function(...) return functions["callback_78"](captured, ...) end
+                end
+                values[99](unpackValues(values, 100, 101))
+                values[100] = values[72]["MouseButton1Click"]
+                values[103] = 446243.0
+                values[100] = values[100]
+                values[99] = values[100]["Connect"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 92}
+                  cells[1] = {values, 91}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[101] = function(...) return functions["callback_80"](captured, ...) end
+                end
+                values[99](unpackValues(values, 100, 101))
+                closeCapturedValues(captureGroups, values, 0)
+                return
+              else
+                values[103] = 118623
+                values[48] = values[34]
+                values[49] = "KINON HUB"
+                values[52] = "Key active - expires in "
+                values[53] = values[31]
+                values[54] = values[47]
+                values[53] = values[53](unpackValues(values, 54, 54))
+                local joined = values[53]
+                for index = 52, 52, -1 do joined = values[index] .. joined end
+                values[50] = joined
+                values[103] = 796219
+                values[51] = 5
+                values[48](unpackValues(values, 49, 51))
+                values[48] = environment.pcall
+                do
+                  local cells = {}
+                  cells[0] = {values, 8}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[49] = function(...) return functions["callback_39"](captured, ...) end
+                end
+                values[48] = values[48](unpackValues(values, 49, 49))
+                values[49] = values[48]
+                if not values[49] then
+                  values[103] = 165982
+                  values[49] = values[34]
+                  values[50] = "KINON HUB"
+                  values[51] = "Hub load failed - panel reopened"
+                  values[52] = 5
+                  values[49](unpackValues(values, 50, 52))
+                  values[103] = 382112
+                  do
+                    local cells = {}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[44] = function(...) return functions["extractAssetId"](captured, ...) end
+                  end
+                  do
+                    local cells = {}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[45] = function(...) return functions["callback_41"](captured, ...) end
+                  end
+                  do
+                    local cells = {}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[46] = function(...) return functions["callback_43"](captured, ...) end
+                  end
+                  do
+                    local cells = {}
+                    cells[0] = {values, 26}
+                    cells[1] = {values, 44}
+                    cells[2] = {values, 45}
+                    cells[3] = {values, 46}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[47] = function(...) return functions["callback_47"](captured, ...) end
+                  end
+                  for index = 48, 48 do values[index] = nil end
+                  values[49] = environment.pcall
+                  do
+                    local cells = {}
+                    cells[0] = {values, 48}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[50] = function(...) return functions["callback_49"](captured, ...) end
+                  end
+                  values[49](unpackValues(values, 50, 50))
+                  values[49] = values[48]
+                  if values[49] then
+                  else
+                    values[103] = 382112
+                    values[50] = values[5]
+                    values[49] = values[50]["WaitForChild"]
+                    values[103] = 837070
+                    values[51] = "PlayerGui"
+                    values[49] = values[49](unpackValues(values, 50, 51))
+                  end
+                  values[103] = 499121
+                  values[48] = values[49]
+                  values[49] = environment.ipairs
+                  values[50] = {}
+                  values[51] = values[48]
+                  values[53] = values[5]
+                  values[52] = values[53]["WaitForChild"]
+                  values[54] = "PlayerGui"
+                  local results = packValues(values[52](unpackValues(values, 53, 54)))
+                  registerTop = 52 + results.n - 1
+                  for index = 52, registerTop do values[index] = results[index - 52 + 1] end
+                  for index = 1, registerTop - 50 do values[50][0 + index] = values[50 + index] end
+                  values[49], values[50], values[51] = values[49](unpackValues(values, 50, 50))
+                  values[103] = 499121.0
+                  if type(values[49]) ~= "function" then
+                    local source = values[49]
+                    if type(source) == "table" and getmetatable(source) == nil then
+                      values[49], values[50], values[51] = next, source, nil
+                    else
+                      values[49] = coroutine.wrap(function() for key, value in source do coroutine.yield(key, value) end end)
+                      values[50], values[51] = nil, nil
+                    end
+                  end
+                  do
+                    local leaveLoop277 = 0
+                    while true do
+                      values[103] = 441130.0
+                      local results = packValues(values[49](values[50], values[51]))
+                      for index = 1, 2 do values[51 + index] = results[index] end
+                      if values[52] ~= nil then
+                        values[51] = values[52]
+                        do
+                          local leaveLoop279 = 0
+                          while true do
+                            values[103] = 973365.0
+                            values[55] = values[53]
+                            values[54] = values[55]["FindFirstChild"]
+                            values[56] = "KinonKeySystem"
+                            values[54] = values[54](unpackValues(values, 55, 56))
+                            values[55] = values[54]
+                            if not values[55] then
+                              leaveLoop279 = 277
+                              break
+                            else
+                              values[103] = 973365.0
+                              values[56] = values[54]
+                              values[55] = values[56]["Destroy"]
+                              values[55](unpackValues(values, 56, 56))
+                              local results = packValues(values[49](values[50], values[51]))
+                              for index = 1, 2 do values[51 + index] = results[index] end
+                              if values[52] ~= nil then
+                                values[51] = values[52]
+                                continue
+                              end
+                            end
+                            leaveLoop279 = 280
+                            break
+                          end
+                          if leaveLoop279 == 277 then
+                            continue
+                          elseif leaveLoop279 == 280 then
+                          end
+                        end
+                      end
+                      leaveLoop277 = 280
+                      break
+                    end
+                  end
+                  values[103] = 267653.0
+                  values[49] = values[32]
+                  values[49] = values[49](unpackValues(values, 50, 49))
+                  values[50] = values[49]
+                  if not values[50] then
+                  else
+                    values[103] = 267653.0
+                    values[50] = 0
+                  end
+                  values[103] = 2062.0
+                  if values[50] then
+                  else
+                    values[103] = 2062.0
+                    values[50] = 46
+                  end
+                  values[103] = 871382.0
+                  values[51] = 400
+                  values[52] = 330 + values[50]
+                  values[54] = environment.Instance
+                  values[53] = values[54]["new"]
+                  values[54] = "ScreenGui"
+                  values[53] = values[53](unpackValues(values, 54, 54))
+                  values[54] = "KinonKeySystem"
+                  values[53]["Name"] = values[54]
+                  values[54] = false
+                  values[53]["ResetOnSpawn"] = values[54]
+                  values[54] = true
+                  values[53]["IgnoreGuiInset"] = values[54]
+                  values[54] = 10000
+                  values[53]["DisplayOrder"] = values[54]
+                  values[54] = environment.pcall
+                  do
+                    local cells = {}
+                    cells[0] = {values, 53}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[55] = function(...) return functions["callback_50"](captured, ...) end
+                  end
+                  values[103] = 437287.0
+                  values[54](unpackValues(values, 55, 55))
+                  values[54] = values[48]
+                  values[53]["Parent"] = values[54]
+                  values[54] = {}
+                  values[56] = values[53]["Destroying"]
+                  values[56] = values[56]
+                  values[55] = values[56]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 54}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[57] = function(...) return functions["callback_51"](captured, ...) end
+                  end
+                  values[55](unpackValues(values, 56, 57))
+                  values[103] = 766321.0
+                  values[56] = environment.Instance
+                  values[55] = values[56]["new"]
+                  values[56] = "Frame"
+                  values[55] = values[55](unpackValues(values, 56, 56))
+                  values[57] = environment.UDim2
+                  values[56] = values[57]["fromScale"]
+                  values[57] = 1
+                  values[58] = 1
+                  values[56] = values[56](unpackValues(values, 57, 58))
+                  values[103] = 837025.0
+                  values[55]["Size"] = values[56]
+                  values[57] = environment.Color3
+                  values[56] = values[57]["new"]
+                  values[57] = 0
+                  values[58] = 0
+                  values[59] = 0
+                  values[56] = values[56](unpackValues(values, 57, 59))
+                  values[55]["BackgroundColor3"] = values[56]
+                  values[56] = 1
+                  values[55]["BackgroundTransparency"] = values[56]
+                  values[56] = 0
+                  values[103] = 96878.0
+                  values[55]["BorderSizePixel"] = values[56]
+                  values[56] = true
+                  values[55]["Active"] = values[56]
+                  values[56] = values[53]
+                  values[55]["Parent"] = values[56]
+                  values[58] = values[2]
+                  values[57] = values[58]["Create"]
+                  values[59] = values[55]
+                  values[62] = environment.TweenInfo
+                  values[60] = values[62]["new"]
+                  values[61] = 0.3
+                  values[64] = environment.Enum
+                  values[103] = 424114.0
+                  values[63] = values[64]["EasingStyle"]
+                  values[62] = values[63]["Quad"]
+                  values[60] = values[60](unpackValues(values, 61, 62))
+                  values[61] = {}
+                  values[62] = 0.5
+                  values[61]["BackgroundTransparency"] = values[62]
+                  values[57] = values[57](unpackValues(values, 58, 61))
+                  values[57] = values[57]
+                  values[56] = values[57]["Play"]
+                  values[56](unpackValues(values, 57, 57))
+                  values[57] = environment.Instance
+                  values[56] = values[57]["new"]
+                  values[57] = "Frame"
+                  values[56] = values[56](unpackValues(values, 57, 57))
+                  values[57] = "KeyPanel"
+                  values[56]["Name"] = values[57]
+                  values[103] = 823574.0
+                  values[58] = environment.Vector2
+                  values[57] = values[58]["new"]
+                  values[58] = 0.5
+                  values[59] = 0.5
+                  values[57] = values[57](unpackValues(values, 58, 59))
+                  values[56]["AnchorPoint"] = values[57]
+                  values[58] = environment.UDim2
+                  values[57] = values[58]["fromScale"]
+                  values[58] = 0.5
+                  values[59] = 0.5
+                  values[57] = values[57](unpackValues(values, 58, 59))
+                  values[56]["Position"] = values[57]
+                  values[58] = environment.UDim2
+                  values[103] = 549479.0
+                  values[57] = values[58]["fromOffset"]
+                  values[58] = values[51]
+                  values[59] = values[52]
+                  values[57] = values[57](unpackValues(values, 58, 59))
+                  values[56]["Size"] = values[57]
+                  values[57] = values[16]
+                  values[56]["BackgroundColor3"] = values[57]
+                  values[57] = 0
+                  values[56]["BorderSizePixel"] = values[57]
+                  values[57] = true
+                  values[103] = 139371.0
+                  values[56]["ClipsDescendants"] = values[57]
+                  values[57] = values[55]
+                  values[56]["Parent"] = values[57]
+                  values[58] = environment.Instance
+                  values[57] = values[58]["new"]
+                  values[58] = "UICorner"
+                  values[59] = values[56]
+                  values[57] = values[57](unpackValues(values, 58, 59))
+                  values[59] = environment.UDim
+                  values[58] = values[59]["new"]
+                  values[59] = 0
+                  values[60] = 22
+                  values[103] = 812291.0
+                  values[58] = values[58](unpackValues(values, 59, 60))
+                  values[57]["CornerRadius"] = values[58]
+                  values[58] = environment.Instance
+                  values[57] = values[58]["new"]
+                  values[58] = "UIGradient"
+                  values[59] = values[56]
+                  values[57] = values[57](unpackValues(values, 58, 59))
+                  values[59] = environment.ColorSequence
+                  values[103] = 443664.0
+                  values[58] = values[59]["new"]
+                  values[59] = {}
+                  values[61] = environment.ColorSequenceKeypoint
+                  values[60] = values[61]["new"]
+                  values[61] = 0
+                  values[62] = values[16]
+                  values[60] = values[60](unpackValues(values, 61, 62))
+                  values[62] = environment.ColorSequenceKeypoint
+                  values[61] = values[62]["new"]
+                  values[62] = 1
+                  values[63] = values[15]
+                  values[103] = 482337.0
+                  local results = packValues(values[61](unpackValues(values, 62, 63)))
+                  registerTop = 61 + results.n - 1
+                  for index = 61, registerTop do values[index] = results[index - 61 + 1] end
+                  for index = 1, registerTop - 59 do values[59][0 + index] = values[59 + index] end
+                  values[103] = 482337
+                  values[103] = 482337.0
+                  values[58] = values[58](unpackValues(values, 59, 59))
+                  values[57]["Color"] = values[58]
+                  values[58] = 135
+                  values[57]["Rotation"] = values[58]
+                  values[59] = environment.Instance
+                  values[58] = values[59]["new"]
+                  values[59] = "UIStroke"
+                  values[103] = 675808.0
+                  values[60] = values[56]
+                  values[58] = values[58](unpackValues(values, 59, 60))
+                  values[60] = environment.Color3
+                  values[59] = values[60]["fromRGB"]
+                  values[60] = 60
+                  values[61] = 60
+                  values[62] = 60
+                  values[59] = values[59](unpackValues(values, 60, 62))
+                  values[58]["Color"] = values[59]
+                  values[59] = 1
+                  values[58]["Thickness"] = values[59]
+                  values[61] = environment.Enum
+                  values[60] = values[61]["ApplyStrokeMode"]
+                  values[103] = 695177.0
+                  values[59] = values[60]["Border"]
+                  values[58]["ApplyStrokeMode"] = values[59]
+                  values[60] = environment.Instance
+                  values[59] = values[60]["new"]
+                  values[60] = "UIScale"
+                  values[61] = values[56]
+                  values[59] = values[59](unpackValues(values, 60, 61))
+                  values[60] = 0.7
+                  values[59]["Scale"] = values[60]
+                  values[60] = 1
+                  values[62] = environment.workspace
+                  values[61] = values[62]["CurrentCamera"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 61}
+                    cells[1] = {values, 51}
+                    cells[2] = {values, 52}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[62] = function(...) return functions["callback_53"](captured, ...) end
+                  end
+                  values[63] = values[62]
+                  values[103] = 892242.0
+                  values[63] = values[63](unpackValues(values, 64, 63))
+                  values[60] = values[63]
+                  values[65] = values[2]
+                  values[64] = values[65]["Create"]
+                  values[66] = values[59]
+                  values[69] = environment.TweenInfo
+                  values[67] = values[69]["new"]
+                  values[68] = 0.35
+                  values[72] = environment.Enum
+                  values[71] = values[72]["EasingStyle"]
+                  values[69] = values[71]["Back"]
+                  values[72] = environment.Enum
+                  values[71] = values[72]["EasingDirection"]
+                  values[70] = values[71]["Out"]
+                  values[67] = values[67](unpackValues(values, 68, 70))
+                  values[68] = {}
+                  values[103] = 28910.0
+                  values[69] = values[60]
+                  values[68]["Scale"] = values[69]
+                  values[64] = values[64](unpackValues(values, 65, 68))
+                  values[64] = values[64]
+                  values[63] = values[64]["Play"]
+                  values[63](unpackValues(values, 64, 64))
+                  values[63] = values[61]
+                  if not values[63] then
+                  else
+                    values[103] = 28910.0
+                    values[65] = values[54]
+                    values[64] = #values[65]
+                    values[63] = values[64] + 1
+                    values[66] = values[61]
+                    values[65] = values[66]["GetPropertyChangedSignal"]
+                    values[67] = "ViewportSize"
+                    values[65] = values[65](unpackValues(values, 66, 67))
+                    values[65] = values[65]
+                    values[64] = values[65]["Connect"]
+                    do
+                      local cells = {}
+                      cells[0] = {values, 62}
+                      cells[1] = {values, 60}
+                      cells[2] = {values, 59}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[66] = function(...) return functions["callback_54"](captured, ...) end
+                    end
+                    values[64] = values[64](unpackValues(values, 65, 66))
+                    values[103] = 12396.0
+                    values[54][values[63]] = values[64]
+                  end
+                  values[103] = 758159.0
+                  values[64] = environment.Instance
+                  values[63] = values[64]["new"]
+                  values[64] = "Frame"
+                  values[63] = values[63](unpackValues(values, 64, 64))
+                  values[65] = environment.UDim2
+                  values[64] = values[65]["new"]
+                  values[65] = 1
+                  values[69] = 112
+                  values[66] = -values[69]
+                  values[67] = 0
+                  values[68] = 58
+                  values[64] = values[64](unpackValues(values, 65, 68))
+                  values[63]["Size"] = values[64]
+                  values[103] = 393573.0
+                  values[65] = environment.UDim2
+                  values[64] = values[65]["fromOffset"]
+                  values[65] = 28
+                  values[66] = 22
+                  values[64] = values[64](unpackValues(values, 65, 66))
+                  values[63]["Position"] = values[64]
+                  values[64] = 1
+                  values[63]["BackgroundTransparency"] = values[64]
+                  values[64] = true
+                  values[63]["Active"] = values[64]
+                  values[64] = values[56]
+                  values[63]["Parent"] = values[64]
+                  values[103] = 1032141.0
+                  values[65] = environment.Instance
+                  values[64] = values[65]["new"]
+                  values[65] = "Frame"
+                  values[64] = values[64](unpackValues(values, 65, 65))
+                  values[66] = environment.UDim2
+                  values[65] = values[66]["fromOffset"]
+                  values[66] = 42
+                  values[67] = 42
+                  values[65] = values[65](unpackValues(values, 66, 67))
+                  values[64]["Size"] = values[65]
+                  values[66] = environment.UDim2
+                  values[65] = values[66]["fromOffset"]
+                  values[66] = 0
+                  values[67] = 8
+                  values[65] = values[65](unpackValues(values, 66, 67))
+                  values[103] = 160318.0
+                  values[64]["Position"] = values[65]
+                  values[66] = environment.Color3
+                  values[65] = values[66]["fromRGB"]
+                  values[66] = 32
+                  values[67] = 32
+                  values[68] = 32
+                  values[65] = values[65](unpackValues(values, 66, 68))
+                  values[64]["BackgroundColor3"] = values[65]
+                  values[103] = 914429.0
+                  values[65] = 0
+                  values[64]["BorderSizePixel"] = values[65]
+                  values[65] = values[63]
+                  values[64]["Parent"] = values[65]
+                  values[66] = environment.Instance
+                  values[65] = values[66]["new"]
+                  values[66] = "UICorner"
+                  values[67] = values[64]
+                  values[65] = values[65](unpackValues(values, 66, 67))
+                  values[103] = 483470.0
+                  values[67] = environment.UDim
+                  values[66] = values[67]["new"]
+                  values[67] = 0
+                  values[68] = 12
+                  values[66] = values[66](unpackValues(values, 67, 68))
+                  values[65]["CornerRadius"] = values[66]
+                  values[66] = environment.Instance
+                  values[65] = values[66]["new"]
+                  values[66] = "UIStroke"
+                  values[67] = values[64]
+                  values[65] = values[65](unpackValues(values, 66, 67))
+                  values[67] = environment.Color3
+                  values[66] = values[67]["fromRGB"]
+                  values[67] = 60
+                  values[68] = 60
+                  values[69] = 60
+                  values[103] = 576667.0
+                  values[66] = values[66](unpackValues(values, 67, 69))
+                  values[65]["Color"] = values[66]
+                  values[66] = 1
+                  values[65]["Thickness"] = values[66]
+                  values[68] = environment.Enum
+                  values[67] = values[68]["ApplyStrokeMode"]
+                  values[66] = values[67]["Border"]
+                  values[65]["ApplyStrokeMode"] = values[66]
+                  values[67] = environment.Instance
+                  values[66] = values[67]["new"]
+                  values[67] = "ImageLabel"
+                  values[66] = values[66](unpackValues(values, 67, 67))
+                  values[68] = environment.UDim2
+                  values[67] = values[68]["fromScale"]
+                  values[103] = 695246.0
+                  values[68] = 1
+                  values[69] = 1
+                  values[67] = values[67](unpackValues(values, 68, 69))
+                  values[66]["Size"] = values[67]
+                  values[67] = 1
+                  values[66]["BackgroundTransparency"] = values[67]
+                  values[69] = environment.Enum
+                  values[68] = values[69]["ScaleType"]
+                  values[67] = values[68]["Crop"]
+                  values[66]["ScaleType"] = values[67]
+                  values[67] = ""
+                  values[66]["Image"] = values[67]
+                  values[103] = 124917.0
+                  values[67] = values[64]
+                  values[66]["Parent"] = values[67]
+                  values[68] = environment.Instance
+                  values[67] = values[68]["new"]
+                  values[68] = "UICorner"
+                  values[69] = values[66]
+                  values[67] = values[67](unpackValues(values, 68, 69))
+                  values[69] = environment.UDim
+                  values[68] = values[69]["new"]
+                  values[69] = 0
+                  values[70] = 12
+                  values[68] = values[68](unpackValues(values, 69, 70))
+                  values[67]["CornerRadius"] = values[68]
+                  values[68] = environment.Instance
+                  values[67] = values[68]["new"]
+                  values[103] = 639358.0
+                  values[68] = "TextLabel"
+                  values[67] = values[67](unpackValues(values, 68, 68))
+                  values[69] = environment.UDim2
+                  values[68] = values[69]["fromScale"]
+                  values[69] = 1
+                  values[70] = 1
+                  values[68] = values[68](unpackValues(values, 69, 70))
+                  values[67]["Size"] = values[68]
+                  values[68] = 1
+                  values[67]["BackgroundTransparency"] = values[68]
+                  values[70] = environment.Enum
+                  values[69] = values[70]["Font"]
+                  values[68] = values[69]["GothamBold"]
+                  values[67]["Font"] = values[68]
+                  values[68] = "K"
+                  values[67]["Text"] = values[68]
+                  values[103] = 688121.0
+                  values[68] = values[24]
+                  values[67]["TextColor3"] = values[68]
+                  values[68] = 20
+                  values[67]["TextSize"] = values[68]
+                  values[68] = false
+                  values[67]["Visible"] = values[68]
+                  values[68] = values[64]
+                  values[67]["Parent"] = values[68]
+                  values[68] = values[47]
+                  values[69] = values[66]
+                  values[103] = 956678.0
+                  values[70] = values[67]
+                  values[68](unpackValues(values, 69, 70))
+                  values[69] = environment.Instance
+                  values[68] = values[69]["new"]
+                  values[69] = "TextLabel"
+                  values[68] = values[68](unpackValues(values, 69, 69))
+                  values[69] = 1
+                  values[68]["BackgroundTransparency"] = values[69]
+                  values[70] = environment.UDim2
+                  values[69] = values[70]["fromOffset"]
+                  values[70] = 56
+                  values[103] = 124047.0
+                  values[71] = 8
+                  values[69] = values[69](unpackValues(values, 70, 71))
+                  values[68]["Position"] = values[69]
+                  values[70] = environment.UDim2
+                  values[69] = values[70]["new"]
+                  values[70] = 1
+                  values[74] = 56
+                  values[71] = -values[74]
+                  values[72] = 0
+                  values[73] = 26
+                  values[103] = 628392.0
+                  values[69] = values[69](unpackValues(values, 70, 73))
+                  values[68]["Size"] = values[69]
+                  values[71] = environment.Enum
+                  values[70] = values[71]["Font"]
+                  values[69] = values[70]["GothamBold"]
+                  values[68]["Font"] = values[69]
+                  values[69] = "KINON HUB"
+                  values[68]["Text"] = values[69]
+                  values[69] = values[24]
+                  values[68]["TextColor3"] = values[69]
+                  values[69] = 20
+                  values[68]["TextSize"] = values[69]
+                  values[71] = environment.Enum
+                  values[70] = values[71]["TextXAlignment"]
+                  values[103] = 1019331.0
+                  values[69] = values[70]["Left"]
+                  values[68]["TextXAlignment"] = values[69]
+                  values[69] = values[63]
+                  values[68]["Parent"] = values[69]
+                  values[70] = environment.Instance
+                  values[69] = values[70]["new"]
+                  values[70] = "Frame"
+                  values[69] = values[69](unpackValues(values, 70, 70))
+                  values[71] = environment.UDim2
+                  values[70] = values[71]["fromOffset"]
+                  values[71] = 56
+                  values[72] = 34
+                  values[103] = 111540.0
+                  values[70] = values[70](unpackValues(values, 71, 72))
+                  values[69]["Position"] = values[70]
+                  values[71] = environment.UDim2
+                  values[70] = values[71]["new"]
+                  values[71] = 1
+                  values[75] = 56
+                  values[72] = -values[75]
+                  values[73] = 0
+                  values[74] = 16
+                  values[70] = values[70](unpackValues(values, 71, 74))
+                  values[69]["Size"] = values[70]
+                  values[70] = 1
+                  values[103] = 84186.0
+                  values[69]["BackgroundTransparency"] = values[70]
+                  values[70] = values[63]
+                  values[69]["Parent"] = values[70]
+                  values[71] = environment.Instance
+                  values[70] = values[71]["new"]
+                  values[71] = "Frame"
+                  values[70] = values[70](unpackValues(values, 71, 71))
+                  values[72] = environment.UDim2
+                  values[71] = values[72]["fromOffset"]
+                  values[72] = 6
+                  values[73] = 6
+                  values[71] = values[71](unpackValues(values, 72, 73))
+                  values[70]["Size"] = values[71]
+                  values[103] = 994489.0
+                  values[72] = environment.UDim2
+                  values[71] = values[72]["fromOffset"]
+                  values[72] = 0
+                  values[73] = 5
+                  values[71] = values[71](unpackValues(values, 72, 73))
+                  values[70]["Position"] = values[71]
+                  values[71] = values[49]
+                  if not values[71] then
+                  else
+                    values[103] = 994489.0
+                    values[71] = values[22]
+                  end
+                  values[103] = 337007.0
+                  if values[71] then
+                  else
+                    values[103] = 337007.0
+                    values[71] = values[23]
+                  end
+                  values[103] = 475053.0
+                  values[70]["BackgroundColor3"] = values[71]
+                  values[71] = 0
+                  values[70]["BorderSizePixel"] = values[71]
+                  values[71] = values[69]
+                  values[70]["Parent"] = values[71]
+                  values[72] = environment.Instance
+                  values[71] = values[72]["new"]
+                  values[72] = "UICorner"
+                  values[73] = values[70]
+                  values[71] = values[71](unpackValues(values, 72, 73))
+                  values[73] = environment.UDim
+                  values[103] = 584782.0
+                  values[72] = values[73]["new"]
+                  values[73] = 1
+                  values[74] = 0
+                  values[72] = values[72](unpackValues(values, 73, 74))
+                  values[71]["CornerRadius"] = values[72]
+                  values[72] = environment.Instance
+                  values[71] = values[72]["new"]
+                  values[72] = "TextLabel"
+                  values[71] = values[71](unpackValues(values, 72, 72))
+                  values[72] = 1
+                  values[71]["BackgroundTransparency"] = values[72]
+                  values[73] = environment.UDim2
+                  values[72] = values[73]["fromOffset"]
+                  values[73] = 12
+                  values[74] = 0
+                  values[72] = values[72](unpackValues(values, 73, 74))
+                  values[103] = 571129.0
+                  values[71]["Position"] = values[72]
+                  values[73] = environment.UDim2
+                  values[72] = values[73]["new"]
+                  values[73] = 1
+                  values[77] = 12
+                  values[74] = -values[77]
+                  values[75] = 1
+                  values[76] = 0
+                  values[72] = values[72](unpackValues(values, 73, 76))
+                  values[71]["Size"] = values[72]
+                  values[74] = environment.Enum
+                  values[73] = values[74]["Font"]
+                  values[72] = values[73]["GothamMedium"]
+                  values[71]["Font"] = values[72]
+                  values[103] = 780365.0
+                  values[72] = values[49]
+                  if not values[72] then
+                  else
+                    values[103] = 780365.0
+                    values[72] = "Violence District"
+                  end
+                  values[103] = 221109.0
+                  if values[72] then
+                  else
+                    values[103] = 221109.0
+                    values[72] = "Game not supported"
+                  end
+                  values[103] = 855795.0
+                  values[71]["Text"] = values[72]
+                  values[72] = values[49]
+                  if not values[72] then
+                  else
+                    values[103] = 855795.0
+                    values[73] = environment.Color3
+                    values[72] = values[73]["fromRGB"]
+                    values[73] = 175
+                    values[74] = 175
+                    values[75] = 175
+                    values[72] = values[72](unpackValues(values, 73, 75))
+                  end
+                  values[103] = 458695.0
+                  if values[72] then
+                  else
+                    values[103] = 458695.0
+                    values[72] = values[23]
+                  end
+                  values[103] = 642323.0
+                  values[71]["TextColor3"] = values[72]
+                  values[72] = 10
+                  values[71]["TextSize"] = values[72]
+                  values[74] = environment.Enum
+                  values[73] = values[74]["TextXAlignment"]
+                  values[72] = values[73]["Left"]
+                  values[71]["TextXAlignment"] = values[72]
+                  values[72] = values[69]
+                  values[71]["Parent"] = values[72]
+                  values[73] = environment.Instance
+                  values[72] = values[73]["new"]
+                  values[73] = "TextButton"
+                  values[103] = 458093.0
+                  values[72] = values[72](unpackValues(values, 73, 73))
+                  values[74] = environment.UDim2
+                  values[73] = values[74]["fromOffset"]
+                  values[74] = 32
+                  values[75] = 32
+                  values[73] = values[73](unpackValues(values, 74, 75))
+                  values[72]["Size"] = values[73]
+                  values[74] = environment.UDim2
+                  values[73] = values[74]["new"]
+                  values[74] = 1
+                  values[78] = 60
+                  values[75] = -values[78]
+                  values[76] = 0
+                  values[77] = 30
+                  values[73] = values[73](unpackValues(values, 74, 77))
+                  values[103] = 273347.0
+                  values[72]["Position"] = values[73]
+                  values[74] = environment.Color3
+                  values[73] = values[74]["fromRGB"]
+                  values[74] = 32
+                  values[75] = 32
+                  values[76] = 32
+                  values[73] = values[73](unpackValues(values, 74, 76))
+                  values[72]["BackgroundColor3"] = values[73]
+                  values[73] = 0
+                  values[72]["BorderSizePixel"] = values[73]
+                  values[103] = 205453.0
+                  values[73] = "X"
+                  values[72]["Text"] = values[73]
+                  values[74] = environment.Color3
+                  values[73] = values[74]["fromRGB"]
+                  values[74] = 175
+                  values[75] = 175
+                  values[76] = 175
+                  values[73] = values[73](unpackValues(values, 74, 76))
+                  values[72]["TextColor3"] = values[73]
+                  values[75] = environment.Enum
+                  values[103] = 261324.0
+                  values[74] = values[75]["Font"]
+                  values[73] = values[74]["GothamBold"]
+                  values[72]["Font"] = values[73]
+                  values[73] = 14
+                  values[72]["TextSize"] = values[73]
+                  values[73] = false
+                  values[72]["AutoButtonColor"] = values[73]
+                  values[73] = values[56]
+                  values[103] = 719446.0
+                  values[72]["Parent"] = values[73]
+                  values[74] = environment.Instance
+                  values[73] = values[74]["new"]
+                  values[74] = "UICorner"
+                  values[75] = values[72]
+                  values[73] = values[73](unpackValues(values, 74, 75))
+                  values[75] = environment.UDim
+                  values[74] = values[75]["new"]
+                  values[75] = 0
+                  values[76] = 10
+                  values[74] = values[74](unpackValues(values, 75, 76))
+                  values[73]["CornerRadius"] = values[74]
+                  values[74] = environment.Instance
+                  values[73] = values[74]["new"]
+                  values[74] = "UIStroke"
+                  values[103] = 741478.0
+                  values[75] = values[72]
+                  values[73] = values[73](unpackValues(values, 74, 75))
+                  values[74] = values[25]
+                  values[73]["Color"] = values[74]
+                  values[74] = 1
+                  values[73]["Thickness"] = values[74]
+                  values[76] = environment.Enum
+                  values[75] = values[76]["ApplyStrokeMode"]
+                  values[103] = 975727.0
+                  values[74] = values[75]["Border"]
+                  values[73]["ApplyStrokeMode"] = values[74]
+                  values[75] = values[72]["MouseEnter"]
+                  values[75] = values[75]
+                  values[74] = values[75]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 2}
+                    cells[1] = {values, 72}
+                    cells[2] = {values, 24}
+                    cells[3] = {values, 73}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[76] = function(...) return functions["callback_55"](captured, ...) end
+                  end
+                  values[74](unpackValues(values, 75, 76))
+                  values[75] = values[72]["MouseLeave"]
+                  values[75] = values[75]
+                  values[74] = values[75]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 2}
+                    cells[1] = {values, 72}
+                    cells[2] = {values, 73}
+                    cells[3] = {values, 25}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[76] = function(...) return functions["callback_56"](captured, ...) end
+                  end
+                  values[74](unpackValues(values, 75, 76))
+                  values[103] = 521986.0
+                  values[75] = environment.Instance
+                  values[74] = values[75]["new"]
+                  values[75] = "Frame"
+                  values[74] = values[74](unpackValues(values, 75, 75))
+                  values[76] = environment.UDim2
+                  values[75] = values[76]["new"]
+                  values[76] = 1
+                  values[80] = 56
+                  values[103] = 168778.0
+                  values[77] = -values[80]
+                  values[78] = 0
+                  values[79] = 1
+                  values[75] = values[75](unpackValues(values, 76, 79))
+                  values[74]["Size"] = values[75]
+                  values[76] = environment.UDim2
+                  values[75] = values[76]["fromOffset"]
+                  values[76] = 28
+                  values[77] = 94
+                  values[103] = 693642.0
+                  values[75] = values[75](unpackValues(values, 76, 77))
+                  values[74]["Position"] = values[75]
+                  values[75] = values[25]
+                  values[74]["BackgroundColor3"] = values[75]
+                  values[75] = 0
+                  values[74]["BorderSizePixel"] = values[75]
+                  values[75] = values[56]
+                  values[74]["Parent"] = values[75]
+                  values[75] = values[49]
+                  values[103] = 357082.0
+                  if values[75] then
+                  else
+                    values[103] = 357082.0
+                    values[76] = environment.Instance
+                    values[75] = values[76]["new"]
+                    values[76] = "Frame"
+                    values[75] = values[75](unpackValues(values, 76, 76))
+                    values[77] = environment.UDim2
+                    values[76] = values[77]["fromOffset"]
+                    values[77] = 28
+                    values[78] = 106
+                    values[103] = 45111.0
+                    values[76] = values[76](unpackValues(values, 77, 78))
+                    values[75]["Position"] = values[76]
+                    values[77] = environment.UDim2
+                    values[76] = values[77]["new"]
+                    values[77] = 1
+                    values[81] = 56
+                    values[78] = -values[81]
+                    values[79] = 0
+                    values[80] = 34
+                    values[76] = values[76](unpackValues(values, 77, 80))
+                    values[75]["Size"] = values[76]
+                    values[103] = 827933.0
+                    values[77] = environment.Color3
+                    values[76] = values[77]["fromRGB"]
+                    values[77] = 38
+                    values[78] = 16
+                    values[79] = 16
+                    values[76] = values[76](unpackValues(values, 77, 79))
+                    values[75]["BackgroundColor3"] = values[76]
+                    values[76] = 0
+                    values[75]["BorderSizePixel"] = values[76]
+                    values[76] = values[56]
+                    values[75]["Parent"] = values[76]
+                    values[77] = environment.Instance
+                    values[103] = 936000.0
+                    values[76] = values[77]["new"]
+                    values[77] = "UICorner"
+                    values[78] = values[75]
+                    values[76] = values[76](unpackValues(values, 77, 78))
+                    values[78] = environment.UDim
+                    values[77] = values[78]["new"]
+                    values[78] = 0
+                    values[79] = 10
+                    values[77] = values[77](unpackValues(values, 78, 79))
+                    values[76]["CornerRadius"] = values[77]
+                    values[77] = environment.Instance
+                    values[76] = values[77]["new"]
+                    values[77] = "UIStroke"
+                    values[78] = values[75]
+                    values[76] = values[76](unpackValues(values, 77, 78))
+                    values[78] = environment.Color3
+                    values[103] = 712264.0
+                    values[77] = values[78]["fromRGB"]
+                    values[78] = 90
+                    values[79] = 30
+                    values[80] = 30
+                    values[77] = values[77](unpackValues(values, 78, 80))
+                    values[76]["Color"] = values[77]
+                    values[77] = 1
+                    values[76]["Thickness"] = values[77]
+                    values[79] = environment.Enum
+                    values[78] = values[79]["ApplyStrokeMode"]
+                    values[77] = values[78]["Border"]
+                    values[76]["ApplyStrokeMode"] = values[77]
+                    values[78] = environment.Instance
+                    values[77] = values[78]["new"]
+                    values[103] = 813365.0
+                    values[78] = "TextLabel"
+                    values[77] = values[77](unpackValues(values, 78, 78))
+                    values[78] = 1
+                    values[77]["BackgroundTransparency"] = values[78]
+                    values[79] = environment.UDim2
+                    values[78] = values[79]["fromScale"]
+                    values[79] = 1
+                    values[80] = 1
+                    values[103] = 876432.0
+                    values[78] = values[78](unpackValues(values, 79, 80))
+                    values[77]["Size"] = values[78]
+                    values[80] = environment.Enum
+                    values[79] = values[80]["Font"]
+                    values[78] = values[79]["GothamMedium"]
+                    values[77]["Font"] = values[78]
+                    values[78] = "This script only works in Violence District"
+                    values[77]["Text"] = values[78]
+                    values[79] = environment.Color3
+                    values[78] = values[79]["fromRGB"]
+                    values[79] = 255
+                    values[80] = 170
+                    values[81] = 170
+                    values[78] = values[78](unpackValues(values, 79, 81))
+                    values[77]["TextColor3"] = values[78]
+                    values[78] = 11
+                    values[103] = 227656.0
+                    values[77]["TextSize"] = values[78]
+                    values[78] = values[75]
+                    values[77]["Parent"] = values[78]
+                  end
+                  values[103] = 342154.0
+                  values[76] = environment.Instance
+                  values[75] = values[76]["new"]
+                  values[76] = "TextLabel"
+                  values[75] = values[75](unpackValues(values, 76, 76))
+                  values[76] = 1
+                  values[75]["BackgroundTransparency"] = values[76]
+                  values[77] = environment.UDim2
+                  values[76] = values[77]["fromOffset"]
+                  values[77] = 30
+                  values[78] = 108 + values[50]
+                  values[76] = values[76](unpackValues(values, 77, 78))
+                  values[75]["Position"] = values[76]
+                  values[77] = environment.UDim2
+                  values[76] = values[77]["new"]
+                  values[77] = 1
+                  values[103] = 308407.0
+                  values[81] = 60
+                  values[78] = -values[81]
+                  values[79] = 0
+                  values[80] = 14
+                  values[76] = values[76](unpackValues(values, 77, 80))
+                  values[75]["Size"] = values[76]
+                  values[78] = environment.Enum
+                  values[77] = values[78]["Font"]
+                  values[76] = values[77]["GothamBold"]
+                  values[75]["Font"] = values[76]
+                  values[76] = "ACCESS KEY"
+                  values[103] = 558284.0
+                  values[75]["Text"] = values[76]
+                  values[76] = values[20]
+                  values[75]["TextColor3"] = values[76]
+                  values[76] = 9
+                  values[75]["TextSize"] = values[76]
+                  values[78] = environment.Enum
+                  values[77] = values[78]["TextXAlignment"]
+                  values[76] = values[77]["Left"]
+                  values[75]["TextXAlignment"] = values[76]
+                  values[76] = values[56]
+                  values[75]["Parent"] = values[76]
+                  values[103] = 809077.0
+                  values[77] = environment.Instance
+                  values[76] = values[77]["new"]
+                  values[77] = "Frame"
+                  values[76] = values[76](unpackValues(values, 77, 77))
+                  values[78] = environment.UDim2
+                  values[77] = values[78]["fromOffset"]
+                  values[78] = 28
+                  values[79] = 126 + values[50]
+                  values[77] = values[77](unpackValues(values, 78, 79))
+                  values[76]["Position"] = values[77]
+                  values[78] = environment.UDim2
+                  values[77] = values[78]["new"]
+                  values[103] = 969666.0
+                  values[78] = 1
+                  values[82] = 56
+                  values[79] = -values[82]
+                  values[80] = 0
+                  values[81] = 46
+                  values[77] = values[77](unpackValues(values, 78, 81))
+                  values[76]["Size"] = values[77]
+                  values[77] = values[18]
+                  values[76]["BackgroundColor3"] = values[77]
+                  values[77] = 0
+                  values[76]["BorderSizePixel"] = values[77]
+                  values[77] = values[56]
+                  values[76]["Parent"] = values[77]
+                  values[78] = environment.Instance
+                  values[77] = values[78]["new"]
+                  values[103] = 178280.0
+                  values[78] = "UICorner"
+                  values[79] = values[76]
+                  values[77] = values[77](unpackValues(values, 78, 79))
+                  values[79] = environment.UDim
+                  values[78] = values[79]["new"]
+                  values[79] = 0
+                  values[80] = 12
+                  values[78] = values[78](unpackValues(values, 79, 80))
+                  values[77]["CornerRadius"] = values[78]
+                  values[78] = environment.Instance
+                  values[77] = values[78]["new"]
+                  values[103] = 508180.0
+                  values[78] = "UIStroke"
+                  values[79] = values[76]
+                  values[77] = values[77](unpackValues(values, 78, 79))
+                  values[78] = values[25]
+                  values[77]["Color"] = values[78]
+                  values[78] = 1
+                  values[77]["Thickness"] = values[78]
+                  values[80] = environment.Enum
+                  values[79] = values[80]["ApplyStrokeMode"]
+                  values[78] = values[79]["Border"]
+                  values[77]["ApplyStrokeMode"] = values[78]
+                  values[79] = environment.Instance
+                  values[78] = values[79]["new"]
+                  values[79] = "TextBox"
+                  values[78] = values[78](unpackValues(values, 79, 79))
+                  values[103] = 675344.0
+                  values[80] = environment.UDim2
+                  values[79] = values[80]["new"]
+                  values[80] = 1
+                  values[84] = 28
+                  values[81] = -values[84]
+                  values[82] = 1
+                  values[83] = 0
+                  values[79] = values[79](unpackValues(values, 80, 83))
+                  values[78]["Size"] = values[79]
+                  values[80] = environment.UDim2
+                  values[79] = values[80]["fromOffset"]
+                  values[103] = 100105.0
+                  values[80] = 14
+                  values[81] = 0
+                  values[79] = values[79](unpackValues(values, 80, 81))
+                  values[78]["Position"] = values[79]
+                  values[79] = 1
+                  values[78]["BackgroundTransparency"] = values[79]
+                  values[79] = false
+                  values[78]["ClearTextOnFocus"] = values[79]
+                  values[103] = 710704.0
+                  values[79] = "Paste your key"
+                  values[78]["PlaceholderText"] = values[79]
+                  values[79] = values[21]
+                  values[78]["PlaceholderColor3"] = values[79]
+                  values[79] = values[37]
+                  values[79] = values[79](unpackValues(values, 80, 79))
+                  if values[79] then
+                  else
+                    values[103] = 710704.0
+                    values[79] = ""
+                  end
+                  values[103] = 382293.0
+                  values[78]["Text"] = values[79]
+                  values[79] = values[19]
+                  values[78]["TextColor3"] = values[79]
+                  values[81] = environment.Enum
+                  values[80] = values[81]["Font"]
+                  values[79] = values[80]["Code"]
+                  values[78]["Font"] = values[79]
+                  values[79] = 13
+                  values[78]["TextSize"] = values[79]
+                  values[81] = environment.Enum
+                  values[80] = values[81]["TextXAlignment"]
+                  values[103] = 165860.0
+                  values[79] = values[80]["Left"]
+                  values[78]["TextXAlignment"] = values[79]
+                  values[81] = environment.Enum
+                  values[80] = values[81]["TextTruncate"]
+                  values[79] = values[80]["AtEnd"]
+                  values[78]["TextTruncate"] = values[79]
+                  values[79] = values[76]
+                  values[78]["Parent"] = values[79]
+                  values[103] = 325019.0
+                  values[80] = values[78]["Focused"]
+                  values[80] = values[80]
+                  values[79] = values[80]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 2}
+                    cells[1] = {values, 77}
+                    cells[2] = {values, 24}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[81] = function(...) return functions["callback_57"](captured, ...) end
+                  end
+                  values[79](unpackValues(values, 80, 81))
+                  values[80] = values[78]["FocusLost"]
+                  values[80] = values[80]
+                  values[79] = values[80]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 2}
+                    cells[1] = {values, 77}
+                    cells[2] = {values, 25}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[81] = function(...) return functions["callback_58"](captured, ...) end
+                  end
+                  values[79](unpackValues(values, 80, 81))
+                  values[103] = 1033000.0
+                  values[80] = environment.Instance
+                  values[79] = values[80]["new"]
+                  values[80] = "Frame"
+                  values[79] = values[79](unpackValues(values, 80, 80))
+                  values[81] = environment.UDim2
+                  values[80] = values[81]["fromOffset"]
+                  values[81] = 28
+                  values[82] = 186 + values[50]
+                  values[103] = 358352.0
+                  values[80] = values[80](unpackValues(values, 81, 82))
+                  values[79]["Position"] = values[80]
+                  values[81] = environment.UDim2
+                  values[80] = values[81]["new"]
+                  values[81] = 1
+                  values[85] = 56
+                  values[82] = -values[85]
+                  values[83] = 0
+                  values[84] = 42
+                  values[80] = values[80](unpackValues(values, 81, 84))
+                  values[103] = 823199.0
+                  values[79]["Size"] = values[80]
+                  values[80] = 1
+                  values[79]["BackgroundTransparency"] = values[80]
+                  values[80] = values[56]
+                  values[79]["Parent"] = values[80]
+                  values[81] = environment.Instance
+                  values[80] = values[81]["new"]
+                  values[81] = "UIListLayout"
+                  values[82] = values[79]
+                  values[80] = values[80](unpackValues(values, 81, 82))
+                  values[83] = environment.Enum
+                  values[82] = values[83]["FillDirection"]
+                  values[81] = values[82]["Horizontal"]
+                  values[80]["FillDirection"] = values[81]
+                  values[103] = 909043.0
+                  values[82] = environment.UDim
+                  values[81] = values[82]["new"]
+                  values[82] = 0
+                  values[83] = 8
+                  values[81] = values[81](unpackValues(values, 82, 83))
+                  values[80]["Padding"] = values[81]
+                  values[83] = environment.Enum
+                  values[82] = values[83]["HorizontalAlignment"]
+                  values[81] = values[82]["Center"]
+                  values[80]["HorizontalAlignment"] = values[81]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 2}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[81] = function(...) return functions["callback_59"](captured, ...) end
+                  end
+                  values[103] = 364490.0
+                  values[83] = environment.Instance
+                  values[82] = values[83]["new"]
+                  values[83] = "TextButton"
+                  values[82] = values[82](unpackValues(values, 83, 83))
+                  values[84] = environment.UDim2
+                  values[83] = values[84]["new"]
+                  values[84] = 0.5
+                  values[88] = 4
+                  values[85] = -values[88]
+                  values[86] = 1
+                  values[103] = 772591.0
+                  values[87] = 0
+                  values[83] = values[83](unpackValues(values, 84, 87))
+                  values[82]["Size"] = values[83]
+                  values[83] = values[24]
+                  values[82]["BackgroundColor3"] = values[83]
+                  values[83] = 0
+                  values[82]["BorderSizePixel"] = values[83]
+                  values[83] = "GET FREE KEY"
+                  values[82]["Text"] = values[83]
+                  values[84] = environment.Color3
+                  values[83] = values[84]["fromRGB"]
+                  values[84] = 10
+                  values[85] = 10
+                  values[86] = 10
+                  values[83] = values[83](unpackValues(values, 84, 86))
+                  values[82]["TextColor3"] = values[83]
+                  values[103] = 411674.0
+                  values[85] = environment.Enum
+                  values[84] = values[85]["Font"]
+                  values[83] = values[84]["GothamBold"]
+                  values[82]["Font"] = values[83]
+                  values[83] = 11
+                  values[82]["TextSize"] = values[83]
+                  values[83] = false
+                  values[82]["AutoButtonColor"] = values[83]
+                  values[83] = values[79]
+                  values[82]["Parent"] = values[83]
+                  values[84] = environment.Instance
+                  values[103] = 7309.0
+                  values[83] = values[84]["new"]
+                  values[84] = "UICorner"
+                  values[85] = values[82]
+                  values[83] = values[83](unpackValues(values, 84, 85))
+                  values[85] = environment.UDim
+                  values[84] = values[85]["new"]
+                  values[85] = 0
+                  values[86] = 12
+                  values[103] = 634896.0
+                  values[84] = values[84](unpackValues(values, 85, 86))
+                  values[83]["CornerRadius"] = values[84]
+                  values[83] = values[81]
+                  values[84] = values[82]
+                  values[83](unpackValues(values, 84, 84))
+                  values[84] = environment.Instance
+                  values[83] = values[84]["new"]
+                  values[84] = "TextButton"
+                  values[83] = values[83](unpackValues(values, 84, 84))
+                  values[103] = 535003.0
+                  values[85] = environment.UDim2
+                  values[84] = values[85]["new"]
+                  values[85] = 0.5
+                  values[89] = 4
+                  values[86] = -values[89]
+                  values[87] = 1
+                  values[88] = 0
+                  values[84] = values[84](unpackValues(values, 85, 88))
+                  values[83]["Size"] = values[84]
+                  values[85] = environment.Color3
+                  values[84] = values[85]["fromRGB"]
+                  values[85] = 32
+                  values[86] = 32
+                  values[87] = 32
+                  values[84] = values[84](unpackValues(values, 85, 87))
+                  values[103] = 790286.0
+                  values[83]["BackgroundColor3"] = values[84]
+                  values[84] = 0
+                  values[83]["BorderSizePixel"] = values[84]
+                  values[84] = "UNLOCK"
+                  values[83]["Text"] = values[84]
+                  values[84] = values[19]
+                  values[83]["TextColor3"] = values[84]
+                  values[86] = environment.Enum
+                  values[103] = 70703.0
+                  values[85] = values[86]["Font"]
+                  values[84] = values[85]["GothamBold"]
+                  values[83]["Font"] = values[84]
+                  values[84] = 11
+                  values[83]["TextSize"] = values[84]
+                  values[84] = false
+                  values[83]["AutoButtonColor"] = values[84]
+                  values[84] = values[79]
+                  values[83]["Parent"] = values[84]
+                  values[85] = environment.Instance
+                  values[84] = values[85]["new"]
+                  values[103] = 424459.0
+                  values[85] = "UICorner"
+                  values[86] = values[83]
+                  values[84] = values[84](unpackValues(values, 85, 86))
+                  values[86] = environment.UDim
+                  values[85] = values[86]["new"]
+                  values[86] = 0
+                  values[87] = 12
+                  values[85] = values[85](unpackValues(values, 86, 87))
+                  values[103] = 364475.0
+                  values[84]["CornerRadius"] = values[85]
+                  values[85] = environment.Instance
+                  values[84] = values[85]["new"]
+                  values[85] = "UIStroke"
+                  values[86] = values[83]
+                  values[84] = values[84](unpackValues(values, 85, 86))
+                  values[85] = values[25]
+                  values[84]["Color"] = values[85]
+                  values[85] = 1
+                  values[84]["Thickness"] = values[85]
+                  values[87] = environment.Enum
+                  values[103] = 746043.0
+                  values[86] = values[87]["ApplyStrokeMode"]
+                  values[85] = values[86]["Border"]
+                  values[84]["ApplyStrokeMode"] = values[85]
+                  values[85] = values[81]
+                  values[86] = values[83]
+                  values[85](unpackValues(values, 86, 86))
+                  values[86] = environment.Instance
+                  values[85] = values[86]["new"]
+                  values[86] = "Frame"
+                  values[85] = values[85](unpackValues(values, 86, 86))
+                  values[87] = environment.UDim2
+                  values[86] = values[87]["fromOffset"]
+                  values[87] = 28
+                  values[88] = 242 + values[50]
+                  values[86] = values[86](unpackValues(values, 87, 88))
+                  values[103] = 835025.0
+                  values[85]["Position"] = values[86]
+                  values[87] = environment.UDim2
+                  values[86] = values[87]["new"]
+                  values[87] = 1
+                  values[91] = 56
+                  values[88] = -values[91]
+                  values[89] = 0
+                  values[90] = 36
+                  values[86] = values[86](unpackValues(values, 87, 90))
+                  values[103] = 764245.0
+                  values[85]["Size"] = values[86]
+                  values[86] = values[18]
+                  values[85]["BackgroundColor3"] = values[86]
+                  values[86] = 0
+                  values[85]["BorderSizePixel"] = values[86]
+                  values[86] = values[56]
+                  values[85]["Parent"] = values[86]
+                  values[87] = environment.Instance
+                  values[86] = values[87]["new"]
+                  values[87] = "UICorner"
+                  values[88] = values[85]
+                  values[86] = values[86](unpackValues(values, 87, 88))
+                  values[88] = environment.UDim
+                  values[87] = values[88]["new"]
+                  values[88] = 0
+                  values[89] = 10
+                  values[103] = 112835.0
+                  values[87] = values[87](unpackValues(values, 88, 89))
+                  values[86]["CornerRadius"] = values[87]
+                  values[87] = environment.Instance
+                  values[86] = values[87]["new"]
+                  values[87] = "UIStroke"
+                  values[88] = values[85]
+                  values[86] = values[86](unpackValues(values, 87, 88))
+                  values[87] = values[25]
+                  values[86]["Color"] = values[87]
+                  values[87] = 1
+                  values[103] = 423649.0
+                  values[86]["Thickness"] = values[87]
+                  values[89] = environment.Enum
+                  values[88] = values[89]["ApplyStrokeMode"]
+                  values[87] = values[88]["Border"]
+                  values[86]["ApplyStrokeMode"] = values[87]
+                  values[88] = environment.Instance
+                  values[87] = values[88]["new"]
+                  values[88] = "Frame"
+                  values[87] = values[87](unpackValues(values, 88, 88))
+                  values[103] = 177560.0
+                  values[89] = environment.UDim2
+                  values[88] = values[89]["fromOffset"]
+                  values[89] = 6
+                  values[90] = 6
+                  values[88] = values[88](unpackValues(values, 89, 90))
+                  values[87]["Size"] = values[88]
+                  values[89] = environment.UDim2
+                  values[88] = values[89]["fromOffset"]
+                  values[89] = 14
+                  values[90] = 15
+                  values[88] = values[88](unpackValues(values, 89, 90))
+                  values[87]["Position"] = values[88]
+                  values[88] = values[21]
+                  values[87]["BackgroundColor3"] = values[88]
+                  values[88] = 0
+                  values[103] = 779825.0
+                  values[87]["BorderSizePixel"] = values[88]
+                  values[88] = values[85]
+                  values[87]["Parent"] = values[88]
+                  values[89] = environment.Instance
+                  values[88] = values[89]["new"]
+                  values[89] = "UICorner"
+                  values[90] = values[87]
+                  values[88] = values[88](unpackValues(values, 89, 90))
+                  values[90] = environment.UDim
+                  values[89] = values[90]["new"]
+                  values[90] = 1
+                  values[91] = 0
+                  values[89] = values[89](unpackValues(values, 90, 91))
+                  values[88]["CornerRadius"] = values[89]
+                  values[89] = environment.Instance
+                  values[103] = 1046794.0
+                  values[88] = values[89]["new"]
+                  values[89] = "TextLabel"
+                  values[88] = values[88](unpackValues(values, 89, 89))
+                  values[89] = 1
+                  values[88]["BackgroundTransparency"] = values[89]
+                  values[90] = environment.UDim2
+                  values[89] = values[90]["fromOffset"]
+                  values[90] = 28
+                  values[91] = 0
+                  values[89] = values[89](unpackValues(values, 90, 91))
+                  values[88]["Position"] = values[89]
+                  values[103] = 82684.0
+                  values[90] = environment.UDim2
+                  values[89] = values[90]["new"]
+                  values[90] = 1
+                  values[94] = 40
+                  values[91] = -values[94]
+                  values[92] = 1
+                  values[93] = 0
+                  values[89] = values[89](unpackValues(values, 90, 93))
+                  values[103] = 357277.0
+                  values[88]["Size"] = values[89]
+                  values[91] = environment.Enum
+                  values[90] = values[91]["Font"]
+                  values[89] = values[90]["Code"]
+                  values[88]["Font"] = values[89]
+                  values[89] = "No active key"
+                  values[88]["Text"] = values[89]
+                  values[89] = values[21]
+                  values[88]["TextColor3"] = values[89]
+                  values[89] = 12
+                  values[88]["TextSize"] = values[89]
+                  values[91] = environment.Enum
+                  values[90] = values[91]["TextXAlignment"]
+                  values[89] = values[90]["Left"]
+                  values[88]["TextXAlignment"] = values[89]
+                  values[89] = values[85]
+                  values[103] = 620493.0
+                  values[88]["Parent"] = values[89]
+                  values[90] = environment.Instance
+                  values[89] = values[90]["new"]
+                  values[90] = "TextLabel"
+                  values[89] = values[89](unpackValues(values, 90, 90))
+                  values[90] = 1
+                  values[89]["BackgroundTransparency"] = values[90]
+                  values[91] = environment.UDim2
+                  values[90] = values[91]["new"]
+                  values[91] = 0
+                  values[103] = 508057.0
+                  values[92] = 28
+                  values[93] = 1
+                  values[95] = 46
+                  values[94] = -values[95]
+                  values[90] = values[90](unpackValues(values, 91, 94))
+                  values[89]["Position"] = values[90]
+                  values[91] = environment.UDim2
+                  values[90] = values[91]["new"]
+                  values[103] = 247217.0
+                  values[91] = 1
+                  values[95] = 56
+                  values[92] = -values[95]
+                  values[93] = 0
+                  values[94] = 18
+                  values[90] = values[90](unpackValues(values, 91, 94))
+                  values[89]["Size"] = values[90]
+                  values[92] = environment.Enum
+                  values[91] = values[92]["Font"]
+                  values[90] = values[91]["GothamMedium"]
+                  values[89]["Font"] = values[90]
+                  values[103] = 802171.0
+                  values[90] = values[49]
+                  if not values[90] then
+                  else
+                    values[103] = 802171.0
+                    values[90] = "Keys are shared"
+                  end
+                  values[103] = 26759.0
+                  if values[90] then
+                  else
+                    values[103] = 26759.0
+                    values[90] = "Open Violence District to unlock"
+                  end
+                  values[103] = 508575.0
+                  values[89]["Text"] = values[90]
+                  values[90] = values[20]
+                  values[89]["TextColor3"] = values[90]
+                  values[90] = 10
+                  values[89]["TextSize"] = values[90]
+                  values[92] = environment.Enum
+                  values[91] = values[92]["TextXAlignment"]
+                  values[90] = values[91]["Center"]
+                  values[89]["TextXAlignment"] = values[90]
+                  values[90] = values[56]
+                  values[89]["Parent"] = values[90]
+                  values[91] = environment.Instance
+                  values[90] = values[91]["new"]
+                  values[91] = "TextLabel"
+                  values[90] = values[90](unpackValues(values, 91, 91))
+                  values[103] = 60040.0
+                  values[91] = 1
+                  values[90]["BackgroundTransparency"] = values[91]
+                  values[92] = environment.UDim2
+                  values[91] = values[92]["new"]
+                  values[92] = 0
+                  values[93] = 28
+                  values[94] = 1
+                  values[96] = 24
+                  values[95] = -values[96]
+                  values[103] = 577688.0
+                  values[91] = values[91](unpackValues(values, 92, 95))
+                  values[90]["Position"] = values[91]
+                  values[92] = environment.UDim2
+                  values[91] = values[92]["new"]
+                  values[92] = 1
+                  values[96] = 56
+                  values[93] = -values[96]
+                  values[94] = 0
+                  values[103] = 973419.0
+                  values[95] = 16
+                  values[91] = values[91](unpackValues(values, 92, 95))
+                  values[90]["Size"] = values[91]
+                  values[93] = environment.Enum
+                  values[92] = values[93]["Font"]
+                  values[91] = values[92]["Code"]
+                  values[90]["Font"] = values[91]
+                  values[91] = "KINON HUB"
+                  values[90]["Text"] = values[91]
+                  values[91] = values[21]
+                  values[90]["TextColor3"] = values[91]
+                  values[91] = 9
+                  values[90]["TextSize"] = values[91]
+                  values[103] = 156679.0
+                  values[93] = environment.Enum
+                  values[92] = values[93]["TextXAlignment"]
+                  values[91] = values[92]["Center"]
+                  values[90]["TextXAlignment"] = values[91]
+                  values[91] = values[56]
+                  values[90]["Parent"] = values[91]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 2}
+                    cells[1] = {values, 59}
+                    cells[2] = {values, 55}
+                    cells[3] = {values, 53}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[91] = function(...) return functions["callback_62"](captured, ...) end
+                  end
+                  do
+                    local cells = {}
+                    cells[0] = {values, 29}
+                    cells[1] = {values, 78}
+                    cells[2] = {values, 27}
+                    cells[3] = {values, 33}
+                    cells[4] = {values, 38}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[92] = function(...) return functions["callback_64"](captured, ...) end
+                  end
+                  values[93] = environment.pcall
+                  do
+                    local cells = {}
+                    cells[0] = {values, 92}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[94] = function(...) return functions["callback_65"](captured, ...) end
+                  end
+                  values[93](unpackValues(values, 94, 94))
+                  values[93] = environment.pcall
+                  values[103] = 365507.0
+                  do
+                    local cells = {}
+                    cells[0] = {values, 5}
+                    cells[1] = {values, 92}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[94] = function(...) return functions["callback_67"](captured, ...) end
+                  end
+                  values[93](unpackValues(values, 94, 94))
+                  do
+                    local cells = {}
+                    cells[0] = {values, 89}
+                    cells[1] = {values, 22}
+                    cells[2] = {values, 23}
+                    cells[3] = {values, 20}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[93] = function(...) return functions["callback_69"](captured, ...) end
+                  end
+                  do
+                    local cells = {}
+                    cells[0] = {values, 39}
+                    cells[1] = {values, 88}
+                    cells[2] = {values, 31}
+                    cells[3] = {values, 22}
+                    cells[4] = {values, 87}
+                    cells[5] = {values, 36}
+                    cells[6] = {values, 30}
+                    cells[7] = {values, 21}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[94] = function(...) return functions["callback_70"](captured, ...) end
+                  end
+                  do
+                    local cells = {}
+                    cells[0] = {values, 42}
+                    cells[1] = {values, 43}
+                    cells[2] = {values, 39}
+                    cells[3] = {values, 82}
+                    cells[4] = {values, 31}
+                    cells[5] = {values, 21}
+                    cells[6] = {values, 24}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[95] = function(...) return functions["callback_71"](captured, ...) end
+                  end
+                  values[97] = environment.task
+                  values[96] = values[97]["spawn"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 53}
+                    cells[1] = {values, 94}
+                    cells[2] = {values, 95}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[97] = function(...) return functions["callback_72"](captured, ...) end
+                  end
+                  values[96](unpackValues(values, 97, 97))
+                  values[96] = false
+                  do
+                    local cells = {}
+                    cells[0] = {values, 96}
+                    cells[1] = {values, 38}
+                    cells[2] = {values, 83}
+                    cells[3] = {values, 22}
+                    cells[4] = {values, 2}
+                    cells[5] = {values, 84}
+                    cells[6] = {values, 93}
+                    cells[7] = {values, 34}
+                    cells[8] = {values, 94}
+                    cells[9] = {values, 32}
+                    cells[10] = {values, 19}
+                    cells[11] = {values, 25}
+                    cells[12] = {values, 8}
+                    cells[13] = {values, 91}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[97] = function(...) return functions["callback_73"](captured, ...) end
+                  end
+                  values[98] = false
+                  values[103] = 193014.0
+                  values[100] = values[82]["MouseButton1Click"]
+                  values[100] = values[100]
+                  values[99] = values[100]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 98}
+                    cells[1] = {values, 43}
+                    cells[2] = {values, 34}
+                    cells[3] = {values, 42}
+                    cells[4] = {values, 82}
+                    cells[5] = {values, 33}
+                    cells[6] = {values, 27}
+                    cells[7] = {values, 78}
+                    cells[8] = {values, 41}
+                    cells[9] = {values, 38}
+                    cells[10] = {values, 93}
+                    cells[11] = {values, 95}
+                    cells[12] = {values, 94}
+                    cells[13] = {values, 97}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[101] = function(...) return functions["callback_76"](captured, ...) end
+                  end
+                  values[99](unpackValues(values, 100, 101))
+                  values[100] = values[83]["MouseButton1Click"]
+                  values[100] = values[100]
+                  values[99] = values[100]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 98}
+                    cells[1] = {values, 83}
+                    cells[2] = {values, 93}
+                    cells[3] = {values, 37}
+                    cells[4] = {values, 29}
+                    cells[5] = {values, 78}
+                    cells[6] = {values, 39}
+                    cells[7] = {values, 97}
+                    cells[8] = {values, 27}
+                    cells[9] = {values, 33}
+                    cells[10] = {values, 38}
+                    cells[11] = {values, 34}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[101] = function(...) return functions["callback_78"](captured, ...) end
+                  end
+                  values[99](unpackValues(values, 100, 101))
+                  values[100] = values[72]["MouseButton1Click"]
+                  values[103] = 446243.0
+                  values[100] = values[100]
+                  values[99] = values[100]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 92}
+                    cells[1] = {values, 91}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[101] = function(...) return functions["callback_80"](captured, ...) end
+                  end
+                  values[99](unpackValues(values, 100, 101))
+                  closeCapturedValues(captureGroups, values, 0)
+                  return
+                else
+                  values[103] = 796219
+                  closeCapturedValues(captureGroups, values, 0)
+                  return
+                end
+              end
+            else
+              values[103] = 552112
+              values[47] = values[45]
+              if values[47] then
+                values[103] = 382112
+                do
+                  local cells = {}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[44] = function(...) return functions["extractAssetId"](captured, ...) end
+                end
+                do
+                  local cells = {}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[45] = function(...) return functions["callback_41"](captured, ...) end
+                end
+                do
+                  local cells = {}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[46] = function(...) return functions["callback_43"](captured, ...) end
+                end
+                do
+                  local cells = {}
+                  cells[0] = {values, 26}
+                  cells[1] = {values, 44}
+                  cells[2] = {values, 45}
+                  cells[3] = {values, 46}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[47] = function(...) return functions["callback_47"](captured, ...) end
+                end
+                for index = 48, 48 do values[index] = nil end
+                values[49] = environment.pcall
+                do
+                  local cells = {}
+                  cells[0] = {values, 48}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[50] = function(...) return functions["callback_49"](captured, ...) end
+                end
+                values[49](unpackValues(values, 50, 50))
+                values[49] = values[48]
+                if values[49] then
+                else
+                  values[103] = 382112
+                  values[50] = values[5]
+                  values[49] = values[50]["WaitForChild"]
+                  values[103] = 837070
+                  values[51] = "PlayerGui"
+                  values[49] = values[49](unpackValues(values, 50, 51))
+                end
+                values[103] = 499121
+                values[48] = values[49]
+                values[49] = environment.ipairs
+                values[50] = {}
+                values[51] = values[48]
+                values[53] = values[5]
+                values[52] = values[53]["WaitForChild"]
+                values[54] = "PlayerGui"
+                local results = packValues(values[52](unpackValues(values, 53, 54)))
+                registerTop = 52 + results.n - 1
+                for index = 52, registerTop do values[index] = results[index - 52 + 1] end
+                for index = 1, registerTop - 50 do values[50][0 + index] = values[50 + index] end
+                values[49], values[50], values[51] = values[49](unpackValues(values, 50, 50))
+                values[103] = 499121.0
+                if type(values[49]) ~= "function" then
+                  local source = values[49]
+                  if type(source) == "table" and getmetatable(source) == nil then
+                    values[49], values[50], values[51] = next, source, nil
+                  else
+                    values[49] = coroutine.wrap(function() for key, value in source do coroutine.yield(key, value) end end)
+                    values[50], values[51] = nil, nil
+                  end
+                end
+                do
+                  local leaveLoop277 = 0
+                  while true do
+                    values[103] = 441130.0
+                    local results = packValues(values[49](values[50], values[51]))
+                    for index = 1, 2 do values[51 + index] = results[index] end
+                    if values[52] ~= nil then
+                      values[51] = values[52]
+                      do
+                        local leaveLoop279 = 0
+                        while true do
+                          values[103] = 973365.0
+                          values[55] = values[53]
+                          values[54] = values[55]["FindFirstChild"]
+                          values[56] = "KinonKeySystem"
+                          values[54] = values[54](unpackValues(values, 55, 56))
+                          values[55] = values[54]
+                          if not values[55] then
+                            leaveLoop279 = 277
+                            break
+                          else
+                            values[103] = 973365.0
+                            values[56] = values[54]
+                            values[55] = values[56]["Destroy"]
+                            values[55](unpackValues(values, 56, 56))
+                            local results = packValues(values[49](values[50], values[51]))
+                            for index = 1, 2 do values[51 + index] = results[index] end
+                            if values[52] ~= nil then
+                              values[51] = values[52]
+                              continue
+                            end
+                          end
+                          leaveLoop279 = 280
+                          break
+                        end
+                        if leaveLoop279 == 277 then
+                          continue
+                        elseif leaveLoop279 == 280 then
+                        end
+                      end
+                    end
+                    leaveLoop277 = 280
+                    break
+                  end
+                end
+                values[103] = 267653.0
+                values[49] = values[32]
+                values[49] = values[49](unpackValues(values, 50, 49))
+                values[50] = values[49]
+                if not values[50] then
+                else
+                  values[103] = 267653.0
+                  values[50] = 0
+                end
+                values[103] = 2062.0
+                if values[50] then
+                else
+                  values[103] = 2062.0
+                  values[50] = 46
+                end
+                values[103] = 871382.0
+                values[51] = 400
+                values[52] = 330 + values[50]
+                values[54] = environment.Instance
+                values[53] = values[54]["new"]
+                values[54] = "ScreenGui"
+                values[53] = values[53](unpackValues(values, 54, 54))
+                values[54] = "KinonKeySystem"
+                values[53]["Name"] = values[54]
+                values[54] = false
+                values[53]["ResetOnSpawn"] = values[54]
+                values[54] = true
+                values[53]["IgnoreGuiInset"] = values[54]
+                values[54] = 10000
+                values[53]["DisplayOrder"] = values[54]
+                values[54] = environment.pcall
+                do
+                  local cells = {}
+                  cells[0] = {values, 53}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[55] = function(...) return functions["callback_50"](captured, ...) end
+                end
+                values[103] = 437287.0
+                values[54](unpackValues(values, 55, 55))
+                values[54] = values[48]
+                values[53]["Parent"] = values[54]
+                values[54] = {}
+                values[56] = values[53]["Destroying"]
+                values[56] = values[56]
+                values[55] = values[56]["Connect"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 54}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[57] = function(...) return functions["callback_51"](captured, ...) end
+                end
+                values[55](unpackValues(values, 56, 57))
+                values[103] = 766321.0
+                values[56] = environment.Instance
+                values[55] = values[56]["new"]
+                values[56] = "Frame"
+                values[55] = values[55](unpackValues(values, 56, 56))
+                values[57] = environment.UDim2
+                values[56] = values[57]["fromScale"]
+                values[57] = 1
+                values[58] = 1
+                values[56] = values[56](unpackValues(values, 57, 58))
+                values[103] = 837025.0
+                values[55]["Size"] = values[56]
+                values[57] = environment.Color3
+                values[56] = values[57]["new"]
+                values[57] = 0
+                values[58] = 0
+                values[59] = 0
+                values[56] = values[56](unpackValues(values, 57, 59))
+                values[55]["BackgroundColor3"] = values[56]
+                values[56] = 1
+                values[55]["BackgroundTransparency"] = values[56]
+                values[56] = 0
+                values[103] = 96878.0
+                values[55]["BorderSizePixel"] = values[56]
+                values[56] = true
+                values[55]["Active"] = values[56]
+                values[56] = values[53]
+                values[55]["Parent"] = values[56]
+                values[58] = values[2]
+                values[57] = values[58]["Create"]
+                values[59] = values[55]
+                values[62] = environment.TweenInfo
+                values[60] = values[62]["new"]
+                values[61] = 0.3
+                values[64] = environment.Enum
+                values[103] = 424114.0
+                values[63] = values[64]["EasingStyle"]
+                values[62] = values[63]["Quad"]
+                values[60] = values[60](unpackValues(values, 61, 62))
+                values[61] = {}
+                values[62] = 0.5
+                values[61]["BackgroundTransparency"] = values[62]
+                values[57] = values[57](unpackValues(values, 58, 61))
+                values[57] = values[57]
+                values[56] = values[57]["Play"]
+                values[56](unpackValues(values, 57, 57))
+                values[57] = environment.Instance
+                values[56] = values[57]["new"]
+                values[57] = "Frame"
+                values[56] = values[56](unpackValues(values, 57, 57))
+                values[57] = "KeyPanel"
+                values[56]["Name"] = values[57]
+                values[103] = 823574.0
+                values[58] = environment.Vector2
+                values[57] = values[58]["new"]
+                values[58] = 0.5
+                values[59] = 0.5
+                values[57] = values[57](unpackValues(values, 58, 59))
+                values[56]["AnchorPoint"] = values[57]
+                values[58] = environment.UDim2
+                values[57] = values[58]["fromScale"]
+                values[58] = 0.5
+                values[59] = 0.5
+                values[57] = values[57](unpackValues(values, 58, 59))
+                values[56]["Position"] = values[57]
+                values[58] = environment.UDim2
+                values[103] = 549479.0
+                values[57] = values[58]["fromOffset"]
+                values[58] = values[51]
+                values[59] = values[52]
+                values[57] = values[57](unpackValues(values, 58, 59))
+                values[56]["Size"] = values[57]
+                values[57] = values[16]
+                values[56]["BackgroundColor3"] = values[57]
+                values[57] = 0
+                values[56]["BorderSizePixel"] = values[57]
+                values[57] = true
+                values[103] = 139371.0
+                values[56]["ClipsDescendants"] = values[57]
+                values[57] = values[55]
+                values[56]["Parent"] = values[57]
+                values[58] = environment.Instance
+                values[57] = values[58]["new"]
+                values[58] = "UICorner"
+                values[59] = values[56]
+                values[57] = values[57](unpackValues(values, 58, 59))
+                values[59] = environment.UDim
+                values[58] = values[59]["new"]
+                values[59] = 0
+                values[60] = 22
+                values[103] = 812291.0
+                values[58] = values[58](unpackValues(values, 59, 60))
+                values[57]["CornerRadius"] = values[58]
+                values[58] = environment.Instance
+                values[57] = values[58]["new"]
+                values[58] = "UIGradient"
+                values[59] = values[56]
+                values[57] = values[57](unpackValues(values, 58, 59))
+                values[59] = environment.ColorSequence
+                values[103] = 443664.0
+                values[58] = values[59]["new"]
+                values[59] = {}
+                values[61] = environment.ColorSequenceKeypoint
+                values[60] = values[61]["new"]
+                values[61] = 0
+                values[62] = values[16]
+                values[60] = values[60](unpackValues(values, 61, 62))
+                values[62] = environment.ColorSequenceKeypoint
+                values[61] = values[62]["new"]
+                values[62] = 1
+                values[63] = values[15]
+                values[103] = 482337.0
+                local results = packValues(values[61](unpackValues(values, 62, 63)))
+                registerTop = 61 + results.n - 1
+                for index = 61, registerTop do values[index] = results[index - 61 + 1] end
+                for index = 1, registerTop - 59 do values[59][0 + index] = values[59 + index] end
+                values[103] = 482337
+                values[103] = 482337.0
+                values[58] = values[58](unpackValues(values, 59, 59))
+                values[57]["Color"] = values[58]
+                values[58] = 135
+                values[57]["Rotation"] = values[58]
+                values[59] = environment.Instance
+                values[58] = values[59]["new"]
+                values[59] = "UIStroke"
+                values[103] = 675808.0
+                values[60] = values[56]
+                values[58] = values[58](unpackValues(values, 59, 60))
+                values[60] = environment.Color3
+                values[59] = values[60]["fromRGB"]
+                values[60] = 60
+                values[61] = 60
+                values[62] = 60
+                values[59] = values[59](unpackValues(values, 60, 62))
+                values[58]["Color"] = values[59]
+                values[59] = 1
+                values[58]["Thickness"] = values[59]
+                values[61] = environment.Enum
+                values[60] = values[61]["ApplyStrokeMode"]
+                values[103] = 695177.0
+                values[59] = values[60]["Border"]
+                values[58]["ApplyStrokeMode"] = values[59]
+                values[60] = environment.Instance
+                values[59] = values[60]["new"]
+                values[60] = "UIScale"
+                values[61] = values[56]
+                values[59] = values[59](unpackValues(values, 60, 61))
+                values[60] = 0.7
+                values[59]["Scale"] = values[60]
+                values[60] = 1
+                values[62] = environment.workspace
+                values[61] = values[62]["CurrentCamera"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 61}
+                  cells[1] = {values, 51}
+                  cells[2] = {values, 52}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[62] = function(...) return functions["callback_53"](captured, ...) end
+                end
+                values[63] = values[62]
+                values[103] = 892242.0
+                values[63] = values[63](unpackValues(values, 64, 63))
+                values[60] = values[63]
+                values[65] = values[2]
+                values[64] = values[65]["Create"]
+                values[66] = values[59]
+                values[69] = environment.TweenInfo
+                values[67] = values[69]["new"]
+                values[68] = 0.35
+                values[72] = environment.Enum
+                values[71] = values[72]["EasingStyle"]
+                values[69] = values[71]["Back"]
+                values[72] = environment.Enum
+                values[71] = values[72]["EasingDirection"]
+                values[70] = values[71]["Out"]
+                values[67] = values[67](unpackValues(values, 68, 70))
+                values[68] = {}
+                values[103] = 28910.0
+                values[69] = values[60]
+                values[68]["Scale"] = values[69]
+                values[64] = values[64](unpackValues(values, 65, 68))
+                values[64] = values[64]
+                values[63] = values[64]["Play"]
+                values[63](unpackValues(values, 64, 64))
+                values[63] = values[61]
+                if not values[63] then
+                else
+                  values[103] = 28910.0
+                  values[65] = values[54]
+                  values[64] = #values[65]
+                  values[63] = values[64] + 1
+                  values[66] = values[61]
+                  values[65] = values[66]["GetPropertyChangedSignal"]
+                  values[67] = "ViewportSize"
+                  values[65] = values[65](unpackValues(values, 66, 67))
+                  values[65] = values[65]
+                  values[64] = values[65]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 62}
+                    cells[1] = {values, 60}
+                    cells[2] = {values, 59}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[66] = function(...) return functions["callback_54"](captured, ...) end
+                  end
+                  values[64] = values[64](unpackValues(values, 65, 66))
+                  values[103] = 12396.0
+                  values[54][values[63]] = values[64]
+                end
+                values[103] = 758159.0
+                values[64] = environment.Instance
+                values[63] = values[64]["new"]
+                values[64] = "Frame"
+                values[63] = values[63](unpackValues(values, 64, 64))
+                values[65] = environment.UDim2
+                values[64] = values[65]["new"]
+                values[65] = 1
+                values[69] = 112
+                values[66] = -values[69]
+                values[67] = 0
+                values[68] = 58
+                values[64] = values[64](unpackValues(values, 65, 68))
+                values[63]["Size"] = values[64]
+                values[103] = 393573.0
+                values[65] = environment.UDim2
+                values[64] = values[65]["fromOffset"]
+                values[65] = 28
+                values[66] = 22
+                values[64] = values[64](unpackValues(values, 65, 66))
+                values[63]["Position"] = values[64]
+                values[64] = 1
+                values[63]["BackgroundTransparency"] = values[64]
+                values[64] = true
+                values[63]["Active"] = values[64]
+                values[64] = values[56]
+                values[63]["Parent"] = values[64]
+                values[103] = 1032141.0
+                values[65] = environment.Instance
+                values[64] = values[65]["new"]
+                values[65] = "Frame"
+                values[64] = values[64](unpackValues(values, 65, 65))
+                values[66] = environment.UDim2
+                values[65] = values[66]["fromOffset"]
+                values[66] = 42
+                values[67] = 42
+                values[65] = values[65](unpackValues(values, 66, 67))
+                values[64]["Size"] = values[65]
+                values[66] = environment.UDim2
+                values[65] = values[66]["fromOffset"]
+                values[66] = 0
+                values[67] = 8
+                values[65] = values[65](unpackValues(values, 66, 67))
+                values[103] = 160318.0
+                values[64]["Position"] = values[65]
+                values[66] = environment.Color3
+                values[65] = values[66]["fromRGB"]
+                values[66] = 32
+                values[67] = 32
+                values[68] = 32
+                values[65] = values[65](unpackValues(values, 66, 68))
+                values[64]["BackgroundColor3"] = values[65]
+                values[103] = 914429.0
+                values[65] = 0
+                values[64]["BorderSizePixel"] = values[65]
+                values[65] = values[63]
+                values[64]["Parent"] = values[65]
+                values[66] = environment.Instance
+                values[65] = values[66]["new"]
+                values[66] = "UICorner"
+                values[67] = values[64]
+                values[65] = values[65](unpackValues(values, 66, 67))
+                values[103] = 483470.0
+                values[67] = environment.UDim
+                values[66] = values[67]["new"]
+                values[67] = 0
+                values[68] = 12
+                values[66] = values[66](unpackValues(values, 67, 68))
+                values[65]["CornerRadius"] = values[66]
+                values[66] = environment.Instance
+                values[65] = values[66]["new"]
+                values[66] = "UIStroke"
+                values[67] = values[64]
+                values[65] = values[65](unpackValues(values, 66, 67))
+                values[67] = environment.Color3
+                values[66] = values[67]["fromRGB"]
+                values[67] = 60
+                values[68] = 60
+                values[69] = 60
+                values[103] = 576667.0
+                values[66] = values[66](unpackValues(values, 67, 69))
+                values[65]["Color"] = values[66]
+                values[66] = 1
+                values[65]["Thickness"] = values[66]
+                values[68] = environment.Enum
+                values[67] = values[68]["ApplyStrokeMode"]
+                values[66] = values[67]["Border"]
+                values[65]["ApplyStrokeMode"] = values[66]
+                values[67] = environment.Instance
+                values[66] = values[67]["new"]
+                values[67] = "ImageLabel"
+                values[66] = values[66](unpackValues(values, 67, 67))
+                values[68] = environment.UDim2
+                values[67] = values[68]["fromScale"]
+                values[103] = 695246.0
+                values[68] = 1
+                values[69] = 1
+                values[67] = values[67](unpackValues(values, 68, 69))
+                values[66]["Size"] = values[67]
+                values[67] = 1
+                values[66]["BackgroundTransparency"] = values[67]
+                values[69] = environment.Enum
+                values[68] = values[69]["ScaleType"]
+                values[67] = values[68]["Crop"]
+                values[66]["ScaleType"] = values[67]
+                values[67] = ""
+                values[66]["Image"] = values[67]
+                values[103] = 124917.0
+                values[67] = values[64]
+                values[66]["Parent"] = values[67]
+                values[68] = environment.Instance
+                values[67] = values[68]["new"]
+                values[68] = "UICorner"
+                values[69] = values[66]
+                values[67] = values[67](unpackValues(values, 68, 69))
+                values[69] = environment.UDim
+                values[68] = values[69]["new"]
+                values[69] = 0
+                values[70] = 12
+                values[68] = values[68](unpackValues(values, 69, 70))
+                values[67]["CornerRadius"] = values[68]
+                values[68] = environment.Instance
+                values[67] = values[68]["new"]
+                values[103] = 639358.0
+                values[68] = "TextLabel"
+                values[67] = values[67](unpackValues(values, 68, 68))
+                values[69] = environment.UDim2
+                values[68] = values[69]["fromScale"]
+                values[69] = 1
+                values[70] = 1
+                values[68] = values[68](unpackValues(values, 69, 70))
+                values[67]["Size"] = values[68]
+                values[68] = 1
+                values[67]["BackgroundTransparency"] = values[68]
+                values[70] = environment.Enum
+                values[69] = values[70]["Font"]
+                values[68] = values[69]["GothamBold"]
+                values[67]["Font"] = values[68]
+                values[68] = "K"
+                values[67]["Text"] = values[68]
+                values[103] = 688121.0
+                values[68] = values[24]
+                values[67]["TextColor3"] = values[68]
+                values[68] = 20
+                values[67]["TextSize"] = values[68]
+                values[68] = false
+                values[67]["Visible"] = values[68]
+                values[68] = values[64]
+                values[67]["Parent"] = values[68]
+                values[68] = values[47]
+                values[69] = values[66]
+                values[103] = 956678.0
+                values[70] = values[67]
+                values[68](unpackValues(values, 69, 70))
+                values[69] = environment.Instance
+                values[68] = values[69]["new"]
+                values[69] = "TextLabel"
+                values[68] = values[68](unpackValues(values, 69, 69))
+                values[69] = 1
+                values[68]["BackgroundTransparency"] = values[69]
+                values[70] = environment.UDim2
+                values[69] = values[70]["fromOffset"]
+                values[70] = 56
+                values[103] = 124047.0
+                values[71] = 8
+                values[69] = values[69](unpackValues(values, 70, 71))
+                values[68]["Position"] = values[69]
+                values[70] = environment.UDim2
+                values[69] = values[70]["new"]
+                values[70] = 1
+                values[74] = 56
+                values[71] = -values[74]
+                values[72] = 0
+                values[73] = 26
+                values[103] = 628392.0
+                values[69] = values[69](unpackValues(values, 70, 73))
+                values[68]["Size"] = values[69]
+                values[71] = environment.Enum
+                values[70] = values[71]["Font"]
+                values[69] = values[70]["GothamBold"]
+                values[68]["Font"] = values[69]
+                values[69] = "KINON HUB"
+                values[68]["Text"] = values[69]
+                values[69] = values[24]
+                values[68]["TextColor3"] = values[69]
+                values[69] = 20
+                values[68]["TextSize"] = values[69]
+                values[71] = environment.Enum
+                values[70] = values[71]["TextXAlignment"]
+                values[103] = 1019331.0
+                values[69] = values[70]["Left"]
+                values[68]["TextXAlignment"] = values[69]
+                values[69] = values[63]
+                values[68]["Parent"] = values[69]
+                values[70] = environment.Instance
+                values[69] = values[70]["new"]
+                values[70] = "Frame"
+                values[69] = values[69](unpackValues(values, 70, 70))
+                values[71] = environment.UDim2
+                values[70] = values[71]["fromOffset"]
+                values[71] = 56
+                values[72] = 34
+                values[103] = 111540.0
+                values[70] = values[70](unpackValues(values, 71, 72))
+                values[69]["Position"] = values[70]
+                values[71] = environment.UDim2
+                values[70] = values[71]["new"]
+                values[71] = 1
+                values[75] = 56
+                values[72] = -values[75]
+                values[73] = 0
+                values[74] = 16
+                values[70] = values[70](unpackValues(values, 71, 74))
+                values[69]["Size"] = values[70]
+                values[70] = 1
+                values[103] = 84186.0
+                values[69]["BackgroundTransparency"] = values[70]
+                values[70] = values[63]
+                values[69]["Parent"] = values[70]
+                values[71] = environment.Instance
+                values[70] = values[71]["new"]
+                values[71] = "Frame"
+                values[70] = values[70](unpackValues(values, 71, 71))
+                values[72] = environment.UDim2
+                values[71] = values[72]["fromOffset"]
+                values[72] = 6
+                values[73] = 6
+                values[71] = values[71](unpackValues(values, 72, 73))
+                values[70]["Size"] = values[71]
+                values[103] = 994489.0
+                values[72] = environment.UDim2
+                values[71] = values[72]["fromOffset"]
+                values[72] = 0
+                values[73] = 5
+                values[71] = values[71](unpackValues(values, 72, 73))
+                values[70]["Position"] = values[71]
+                values[71] = values[49]
+                if not values[71] then
+                else
+                  values[103] = 994489.0
+                  values[71] = values[22]
+                end
+                values[103] = 337007.0
+                if values[71] then
+                else
+                  values[103] = 337007.0
+                  values[71] = values[23]
+                end
+                values[103] = 475053.0
+                values[70]["BackgroundColor3"] = values[71]
+                values[71] = 0
+                values[70]["BorderSizePixel"] = values[71]
+                values[71] = values[69]
+                values[70]["Parent"] = values[71]
+                values[72] = environment.Instance
+                values[71] = values[72]["new"]
+                values[72] = "UICorner"
+                values[73] = values[70]
+                values[71] = values[71](unpackValues(values, 72, 73))
+                values[73] = environment.UDim
+                values[103] = 584782.0
+                values[72] = values[73]["new"]
+                values[73] = 1
+                values[74] = 0
+                values[72] = values[72](unpackValues(values, 73, 74))
+                values[71]["CornerRadius"] = values[72]
+                values[72] = environment.Instance
+                values[71] = values[72]["new"]
+                values[72] = "TextLabel"
+                values[71] = values[71](unpackValues(values, 72, 72))
+                values[72] = 1
+                values[71]["BackgroundTransparency"] = values[72]
+                values[73] = environment.UDim2
+                values[72] = values[73]["fromOffset"]
+                values[73] = 12
+                values[74] = 0
+                values[72] = values[72](unpackValues(values, 73, 74))
+                values[103] = 571129.0
+                values[71]["Position"] = values[72]
+                values[73] = environment.UDim2
+                values[72] = values[73]["new"]
+                values[73] = 1
+                values[77] = 12
+                values[74] = -values[77]
+                values[75] = 1
+                values[76] = 0
+                values[72] = values[72](unpackValues(values, 73, 76))
+                values[71]["Size"] = values[72]
+                values[74] = environment.Enum
+                values[73] = values[74]["Font"]
+                values[72] = values[73]["GothamMedium"]
+                values[71]["Font"] = values[72]
+                values[103] = 780365.0
+                values[72] = values[49]
+                if not values[72] then
+                else
+                  values[103] = 780365.0
+                  values[72] = "Violence District"
+                end
+                values[103] = 221109.0
+                if values[72] then
+                else
+                  values[103] = 221109.0
+                  values[72] = "Game not supported"
+                end
+                values[103] = 855795.0
+                values[71]["Text"] = values[72]
+                values[72] = values[49]
+                if not values[72] then
+                else
+                  values[103] = 855795.0
+                  values[73] = environment.Color3
+                  values[72] = values[73]["fromRGB"]
+                  values[73] = 175
+                  values[74] = 175
+                  values[75] = 175
+                  values[72] = values[72](unpackValues(values, 73, 75))
+                end
+                values[103] = 458695.0
+                if values[72] then
+                else
+                  values[103] = 458695.0
+                  values[72] = values[23]
+                end
+                values[103] = 642323.0
+                values[71]["TextColor3"] = values[72]
+                values[72] = 10
+                values[71]["TextSize"] = values[72]
+                values[74] = environment.Enum
+                values[73] = values[74]["TextXAlignment"]
+                values[72] = values[73]["Left"]
+                values[71]["TextXAlignment"] = values[72]
+                values[72] = values[69]
+                values[71]["Parent"] = values[72]
+                values[73] = environment.Instance
+                values[72] = values[73]["new"]
+                values[73] = "TextButton"
+                values[103] = 458093.0
+                values[72] = values[72](unpackValues(values, 73, 73))
+                values[74] = environment.UDim2
+                values[73] = values[74]["fromOffset"]
+                values[74] = 32
+                values[75] = 32
+                values[73] = values[73](unpackValues(values, 74, 75))
+                values[72]["Size"] = values[73]
+                values[74] = environment.UDim2
+                values[73] = values[74]["new"]
+                values[74] = 1
+                values[78] = 60
+                values[75] = -values[78]
+                values[76] = 0
+                values[77] = 30
+                values[73] = values[73](unpackValues(values, 74, 77))
+                values[103] = 273347.0
+                values[72]["Position"] = values[73]
+                values[74] = environment.Color3
+                values[73] = values[74]["fromRGB"]
+                values[74] = 32
+                values[75] = 32
+                values[76] = 32
+                values[73] = values[73](unpackValues(values, 74, 76))
+                values[72]["BackgroundColor3"] = values[73]
+                values[73] = 0
+                values[72]["BorderSizePixel"] = values[73]
+                values[103] = 205453.0
+                values[73] = "X"
+                values[72]["Text"] = values[73]
+                values[74] = environment.Color3
+                values[73] = values[74]["fromRGB"]
+                values[74] = 175
+                values[75] = 175
+                values[76] = 175
+                values[73] = values[73](unpackValues(values, 74, 76))
+                values[72]["TextColor3"] = values[73]
+                values[75] = environment.Enum
+                values[103] = 261324.0
+                values[74] = values[75]["Font"]
+                values[73] = values[74]["GothamBold"]
+                values[72]["Font"] = values[73]
+                values[73] = 14
+                values[72]["TextSize"] = values[73]
+                values[73] = false
+                values[72]["AutoButtonColor"] = values[73]
+                values[73] = values[56]
+                values[103] = 719446.0
+                values[72]["Parent"] = values[73]
+                values[74] = environment.Instance
+                values[73] = values[74]["new"]
+                values[74] = "UICorner"
+                values[75] = values[72]
+                values[73] = values[73](unpackValues(values, 74, 75))
+                values[75] = environment.UDim
+                values[74] = values[75]["new"]
+                values[75] = 0
+                values[76] = 10
+                values[74] = values[74](unpackValues(values, 75, 76))
+                values[73]["CornerRadius"] = values[74]
+                values[74] = environment.Instance
+                values[73] = values[74]["new"]
+                values[74] = "UIStroke"
+                values[103] = 741478.0
+                values[75] = values[72]
+                values[73] = values[73](unpackValues(values, 74, 75))
+                values[74] = values[25]
+                values[73]["Color"] = values[74]
+                values[74] = 1
+                values[73]["Thickness"] = values[74]
+                values[76] = environment.Enum
+                values[75] = values[76]["ApplyStrokeMode"]
+                values[103] = 975727.0
+                values[74] = values[75]["Border"]
+                values[73]["ApplyStrokeMode"] = values[74]
+                values[75] = values[72]["MouseEnter"]
+                values[75] = values[75]
+                values[74] = values[75]["Connect"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 2}
+                  cells[1] = {values, 72}
+                  cells[2] = {values, 24}
+                  cells[3] = {values, 73}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[76] = function(...) return functions["callback_55"](captured, ...) end
+                end
+                values[74](unpackValues(values, 75, 76))
+                values[75] = values[72]["MouseLeave"]
+                values[75] = values[75]
+                values[74] = values[75]["Connect"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 2}
+                  cells[1] = {values, 72}
+                  cells[2] = {values, 73}
+                  cells[3] = {values, 25}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[76] = function(...) return functions["callback_56"](captured, ...) end
+                end
+                values[74](unpackValues(values, 75, 76))
+                values[103] = 521986.0
+                values[75] = environment.Instance
+                values[74] = values[75]["new"]
+                values[75] = "Frame"
+                values[74] = values[74](unpackValues(values, 75, 75))
+                values[76] = environment.UDim2
+                values[75] = values[76]["new"]
+                values[76] = 1
+                values[80] = 56
+                values[103] = 168778.0
+                values[77] = -values[80]
+                values[78] = 0
+                values[79] = 1
+                values[75] = values[75](unpackValues(values, 76, 79))
+                values[74]["Size"] = values[75]
+                values[76] = environment.UDim2
+                values[75] = values[76]["fromOffset"]
+                values[76] = 28
+                values[77] = 94
+                values[103] = 693642.0
+                values[75] = values[75](unpackValues(values, 76, 77))
+                values[74]["Position"] = values[75]
+                values[75] = values[25]
+                values[74]["BackgroundColor3"] = values[75]
+                values[75] = 0
+                values[74]["BorderSizePixel"] = values[75]
+                values[75] = values[56]
+                values[74]["Parent"] = values[75]
+                values[75] = values[49]
+                values[103] = 357082.0
+                if values[75] then
+                else
+                  values[103] = 357082.0
+                  values[76] = environment.Instance
+                  values[75] = values[76]["new"]
+                  values[76] = "Frame"
+                  values[75] = values[75](unpackValues(values, 76, 76))
+                  values[77] = environment.UDim2
+                  values[76] = values[77]["fromOffset"]
+                  values[77] = 28
+                  values[78] = 106
+                  values[103] = 45111.0
+                  values[76] = values[76](unpackValues(values, 77, 78))
+                  values[75]["Position"] = values[76]
+                  values[77] = environment.UDim2
+                  values[76] = values[77]["new"]
+                  values[77] = 1
+                  values[81] = 56
+                  values[78] = -values[81]
+                  values[79] = 0
+                  values[80] = 34
+                  values[76] = values[76](unpackValues(values, 77, 80))
+                  values[75]["Size"] = values[76]
+                  values[103] = 827933.0
+                  values[77] = environment.Color3
+                  values[76] = values[77]["fromRGB"]
+                  values[77] = 38
+                  values[78] = 16
+                  values[79] = 16
+                  values[76] = values[76](unpackValues(values, 77, 79))
+                  values[75]["BackgroundColor3"] = values[76]
+                  values[76] = 0
+                  values[75]["BorderSizePixel"] = values[76]
+                  values[76] = values[56]
+                  values[75]["Parent"] = values[76]
+                  values[77] = environment.Instance
+                  values[103] = 936000.0
+                  values[76] = values[77]["new"]
+                  values[77] = "UICorner"
+                  values[78] = values[75]
+                  values[76] = values[76](unpackValues(values, 77, 78))
+                  values[78] = environment.UDim
+                  values[77] = values[78]["new"]
+                  values[78] = 0
+                  values[79] = 10
+                  values[77] = values[77](unpackValues(values, 78, 79))
+                  values[76]["CornerRadius"] = values[77]
+                  values[77] = environment.Instance
+                  values[76] = values[77]["new"]
+                  values[77] = "UIStroke"
+                  values[78] = values[75]
+                  values[76] = values[76](unpackValues(values, 77, 78))
+                  values[78] = environment.Color3
+                  values[103] = 712264.0
+                  values[77] = values[78]["fromRGB"]
+                  values[78] = 90
+                  values[79] = 30
+                  values[80] = 30
+                  values[77] = values[77](unpackValues(values, 78, 80))
+                  values[76]["Color"] = values[77]
+                  values[77] = 1
+                  values[76]["Thickness"] = values[77]
+                  values[79] = environment.Enum
+                  values[78] = values[79]["ApplyStrokeMode"]
+                  values[77] = values[78]["Border"]
+                  values[76]["ApplyStrokeMode"] = values[77]
+                  values[78] = environment.Instance
+                  values[77] = values[78]["new"]
+                  values[103] = 813365.0
+                  values[78] = "TextLabel"
+                  values[77] = values[77](unpackValues(values, 78, 78))
+                  values[78] = 1
+                  values[77]["BackgroundTransparency"] = values[78]
+                  values[79] = environment.UDim2
+                  values[78] = values[79]["fromScale"]
+                  values[79] = 1
+                  values[80] = 1
+                  values[103] = 876432.0
+                  values[78] = values[78](unpackValues(values, 79, 80))
+                  values[77]["Size"] = values[78]
+                  values[80] = environment.Enum
+                  values[79] = values[80]["Font"]
+                  values[78] = values[79]["GothamMedium"]
+                  values[77]["Font"] = values[78]
+                  values[78] = "This script only works in Violence District"
+                  values[77]["Text"] = values[78]
+                  values[79] = environment.Color3
+                  values[78] = values[79]["fromRGB"]
+                  values[79] = 255
+                  values[80] = 170
+                  values[81] = 170
+                  values[78] = values[78](unpackValues(values, 79, 81))
+                  values[77]["TextColor3"] = values[78]
+                  values[78] = 11
+                  values[103] = 227656.0
+                  values[77]["TextSize"] = values[78]
+                  values[78] = values[75]
+                  values[77]["Parent"] = values[78]
+                end
+                values[103] = 342154.0
+                values[76] = environment.Instance
+                values[75] = values[76]["new"]
+                values[76] = "TextLabel"
+                values[75] = values[75](unpackValues(values, 76, 76))
+                values[76] = 1
+                values[75]["BackgroundTransparency"] = values[76]
+                values[77] = environment.UDim2
+                values[76] = values[77]["fromOffset"]
+                values[77] = 30
+                values[78] = 108 + values[50]
+                values[76] = values[76](unpackValues(values, 77, 78))
+                values[75]["Position"] = values[76]
+                values[77] = environment.UDim2
+                values[76] = values[77]["new"]
+                values[77] = 1
+                values[103] = 308407.0
+                values[81] = 60
+                values[78] = -values[81]
+                values[79] = 0
+                values[80] = 14
+                values[76] = values[76](unpackValues(values, 77, 80))
+                values[75]["Size"] = values[76]
+                values[78] = environment.Enum
+                values[77] = values[78]["Font"]
+                values[76] = values[77]["GothamBold"]
+                values[75]["Font"] = values[76]
+                values[76] = "ACCESS KEY"
+                values[103] = 558284.0
+                values[75]["Text"] = values[76]
+                values[76] = values[20]
+                values[75]["TextColor3"] = values[76]
+                values[76] = 9
+                values[75]["TextSize"] = values[76]
+                values[78] = environment.Enum
+                values[77] = values[78]["TextXAlignment"]
+                values[76] = values[77]["Left"]
+                values[75]["TextXAlignment"] = values[76]
+                values[76] = values[56]
+                values[75]["Parent"] = values[76]
+                values[103] = 809077.0
+                values[77] = environment.Instance
+                values[76] = values[77]["new"]
+                values[77] = "Frame"
+                values[76] = values[76](unpackValues(values, 77, 77))
+                values[78] = environment.UDim2
+                values[77] = values[78]["fromOffset"]
+                values[78] = 28
+                values[79] = 126 + values[50]
+                values[77] = values[77](unpackValues(values, 78, 79))
+                values[76]["Position"] = values[77]
+                values[78] = environment.UDim2
+                values[77] = values[78]["new"]
+                values[103] = 969666.0
+                values[78] = 1
+                values[82] = 56
+                values[79] = -values[82]
+                values[80] = 0
+                values[81] = 46
+                values[77] = values[77](unpackValues(values, 78, 81))
+                values[76]["Size"] = values[77]
+                values[77] = values[18]
+                values[76]["BackgroundColor3"] = values[77]
+                values[77] = 0
+                values[76]["BorderSizePixel"] = values[77]
+                values[77] = values[56]
+                values[76]["Parent"] = values[77]
+                values[78] = environment.Instance
+                values[77] = values[78]["new"]
+                values[103] = 178280.0
+                values[78] = "UICorner"
+                values[79] = values[76]
+                values[77] = values[77](unpackValues(values, 78, 79))
+                values[79] = environment.UDim
+                values[78] = values[79]["new"]
+                values[79] = 0
+                values[80] = 12
+                values[78] = values[78](unpackValues(values, 79, 80))
+                values[77]["CornerRadius"] = values[78]
+                values[78] = environment.Instance
+                values[77] = values[78]["new"]
+                values[103] = 508180.0
+                values[78] = "UIStroke"
+                values[79] = values[76]
+                values[77] = values[77](unpackValues(values, 78, 79))
+                values[78] = values[25]
+                values[77]["Color"] = values[78]
+                values[78] = 1
+                values[77]["Thickness"] = values[78]
+                values[80] = environment.Enum
+                values[79] = values[80]["ApplyStrokeMode"]
+                values[78] = values[79]["Border"]
+                values[77]["ApplyStrokeMode"] = values[78]
+                values[79] = environment.Instance
+                values[78] = values[79]["new"]
+                values[79] = "TextBox"
+                values[78] = values[78](unpackValues(values, 79, 79))
+                values[103] = 675344.0
+                values[80] = environment.UDim2
+                values[79] = values[80]["new"]
+                values[80] = 1
+                values[84] = 28
+                values[81] = -values[84]
+                values[82] = 1
+                values[83] = 0
+                values[79] = values[79](unpackValues(values, 80, 83))
+                values[78]["Size"] = values[79]
+                values[80] = environment.UDim2
+                values[79] = values[80]["fromOffset"]
+                values[103] = 100105.0
+                values[80] = 14
+                values[81] = 0
+                values[79] = values[79](unpackValues(values, 80, 81))
+                values[78]["Position"] = values[79]
+                values[79] = 1
+                values[78]["BackgroundTransparency"] = values[79]
+                values[79] = false
+                values[78]["ClearTextOnFocus"] = values[79]
+                values[103] = 710704.0
+                values[79] = "Paste your key"
+                values[78]["PlaceholderText"] = values[79]
+                values[79] = values[21]
+                values[78]["PlaceholderColor3"] = values[79]
+                values[79] = values[37]
+                values[79] = values[79](unpackValues(values, 80, 79))
+                if values[79] then
+                else
+                  values[103] = 710704.0
+                  values[79] = ""
+                end
+                values[103] = 382293.0
+                values[78]["Text"] = values[79]
+                values[79] = values[19]
+                values[78]["TextColor3"] = values[79]
+                values[81] = environment.Enum
+                values[80] = values[81]["Font"]
+                values[79] = values[80]["Code"]
+                values[78]["Font"] = values[79]
+                values[79] = 13
+                values[78]["TextSize"] = values[79]
+                values[81] = environment.Enum
+                values[80] = values[81]["TextXAlignment"]
+                values[103] = 165860.0
+                values[79] = values[80]["Left"]
+                values[78]["TextXAlignment"] = values[79]
+                values[81] = environment.Enum
+                values[80] = values[81]["TextTruncate"]
+                values[79] = values[80]["AtEnd"]
+                values[78]["TextTruncate"] = values[79]
+                values[79] = values[76]
+                values[78]["Parent"] = values[79]
+                values[103] = 325019.0
+                values[80] = values[78]["Focused"]
+                values[80] = values[80]
+                values[79] = values[80]["Connect"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 2}
+                  cells[1] = {values, 77}
+                  cells[2] = {values, 24}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[81] = function(...) return functions["callback_57"](captured, ...) end
+                end
+                values[79](unpackValues(values, 80, 81))
+                values[80] = values[78]["FocusLost"]
+                values[80] = values[80]
+                values[79] = values[80]["Connect"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 2}
+                  cells[1] = {values, 77}
+                  cells[2] = {values, 25}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[81] = function(...) return functions["callback_58"](captured, ...) end
+                end
+                values[79](unpackValues(values, 80, 81))
+                values[103] = 1033000.0
+                values[80] = environment.Instance
+                values[79] = values[80]["new"]
+                values[80] = "Frame"
+                values[79] = values[79](unpackValues(values, 80, 80))
+                values[81] = environment.UDim2
+                values[80] = values[81]["fromOffset"]
+                values[81] = 28
+                values[82] = 186 + values[50]
+                values[103] = 358352.0
+                values[80] = values[80](unpackValues(values, 81, 82))
+                values[79]["Position"] = values[80]
+                values[81] = environment.UDim2
+                values[80] = values[81]["new"]
+                values[81] = 1
+                values[85] = 56
+                values[82] = -values[85]
+                values[83] = 0
+                values[84] = 42
+                values[80] = values[80](unpackValues(values, 81, 84))
+                values[103] = 823199.0
+                values[79]["Size"] = values[80]
+                values[80] = 1
+                values[79]["BackgroundTransparency"] = values[80]
+                values[80] = values[56]
+                values[79]["Parent"] = values[80]
+                values[81] = environment.Instance
+                values[80] = values[81]["new"]
+                values[81] = "UIListLayout"
+                values[82] = values[79]
+                values[80] = values[80](unpackValues(values, 81, 82))
+                values[83] = environment.Enum
+                values[82] = values[83]["FillDirection"]
+                values[81] = values[82]["Horizontal"]
+                values[80]["FillDirection"] = values[81]
+                values[103] = 909043.0
+                values[82] = environment.UDim
+                values[81] = values[82]["new"]
+                values[82] = 0
+                values[83] = 8
+                values[81] = values[81](unpackValues(values, 82, 83))
+                values[80]["Padding"] = values[81]
+                values[83] = environment.Enum
+                values[82] = values[83]["HorizontalAlignment"]
+                values[81] = values[82]["Center"]
+                values[80]["HorizontalAlignment"] = values[81]
+                do
+                  local cells = {}
+                  cells[0] = {values, 2}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[81] = function(...) return functions["callback_59"](captured, ...) end
+                end
+                values[103] = 364490.0
+                values[83] = environment.Instance
+                values[82] = values[83]["new"]
+                values[83] = "TextButton"
+                values[82] = values[82](unpackValues(values, 83, 83))
+                values[84] = environment.UDim2
+                values[83] = values[84]["new"]
+                values[84] = 0.5
+                values[88] = 4
+                values[85] = -values[88]
+                values[86] = 1
+                values[103] = 772591.0
+                values[87] = 0
+                values[83] = values[83](unpackValues(values, 84, 87))
+                values[82]["Size"] = values[83]
+                values[83] = values[24]
+                values[82]["BackgroundColor3"] = values[83]
+                values[83] = 0
+                values[82]["BorderSizePixel"] = values[83]
+                values[83] = "GET FREE KEY"
+                values[82]["Text"] = values[83]
+                values[84] = environment.Color3
+                values[83] = values[84]["fromRGB"]
+                values[84] = 10
+                values[85] = 10
+                values[86] = 10
+                values[83] = values[83](unpackValues(values, 84, 86))
+                values[82]["TextColor3"] = values[83]
+                values[103] = 411674.0
+                values[85] = environment.Enum
+                values[84] = values[85]["Font"]
+                values[83] = values[84]["GothamBold"]
+                values[82]["Font"] = values[83]
+                values[83] = 11
+                values[82]["TextSize"] = values[83]
+                values[83] = false
+                values[82]["AutoButtonColor"] = values[83]
+                values[83] = values[79]
+                values[82]["Parent"] = values[83]
+                values[84] = environment.Instance
+                values[103] = 7309.0
+                values[83] = values[84]["new"]
+                values[84] = "UICorner"
+                values[85] = values[82]
+                values[83] = values[83](unpackValues(values, 84, 85))
+                values[85] = environment.UDim
+                values[84] = values[85]["new"]
+                values[85] = 0
+                values[86] = 12
+                values[103] = 634896.0
+                values[84] = values[84](unpackValues(values, 85, 86))
+                values[83]["CornerRadius"] = values[84]
+                values[83] = values[81]
+                values[84] = values[82]
+                values[83](unpackValues(values, 84, 84))
+                values[84] = environment.Instance
+                values[83] = values[84]["new"]
+                values[84] = "TextButton"
+                values[83] = values[83](unpackValues(values, 84, 84))
+                values[103] = 535003.0
+                values[85] = environment.UDim2
+                values[84] = values[85]["new"]
+                values[85] = 0.5
+                values[89] = 4
+                values[86] = -values[89]
+                values[87] = 1
+                values[88] = 0
+                values[84] = values[84](unpackValues(values, 85, 88))
+                values[83]["Size"] = values[84]
+                values[85] = environment.Color3
+                values[84] = values[85]["fromRGB"]
+                values[85] = 32
+                values[86] = 32
+                values[87] = 32
+                values[84] = values[84](unpackValues(values, 85, 87))
+                values[103] = 790286.0
+                values[83]["BackgroundColor3"] = values[84]
+                values[84] = 0
+                values[83]["BorderSizePixel"] = values[84]
+                values[84] = "UNLOCK"
+                values[83]["Text"] = values[84]
+                values[84] = values[19]
+                values[83]["TextColor3"] = values[84]
+                values[86] = environment.Enum
+                values[103] = 70703.0
+                values[85] = values[86]["Font"]
+                values[84] = values[85]["GothamBold"]
+                values[83]["Font"] = values[84]
+                values[84] = 11
+                values[83]["TextSize"] = values[84]
+                values[84] = false
+                values[83]["AutoButtonColor"] = values[84]
+                values[84] = values[79]
+                values[83]["Parent"] = values[84]
+                values[85] = environment.Instance
+                values[84] = values[85]["new"]
+                values[103] = 424459.0
+                values[85] = "UICorner"
+                values[86] = values[83]
+                values[84] = values[84](unpackValues(values, 85, 86))
+                values[86] = environment.UDim
+                values[85] = values[86]["new"]
+                values[86] = 0
+                values[87] = 12
+                values[85] = values[85](unpackValues(values, 86, 87))
+                values[103] = 364475.0
+                values[84]["CornerRadius"] = values[85]
+                values[85] = environment.Instance
+                values[84] = values[85]["new"]
+                values[85] = "UIStroke"
+                values[86] = values[83]
+                values[84] = values[84](unpackValues(values, 85, 86))
+                values[85] = values[25]
+                values[84]["Color"] = values[85]
+                values[85] = 1
+                values[84]["Thickness"] = values[85]
+                values[87] = environment.Enum
+                values[103] = 746043.0
+                values[86] = values[87]["ApplyStrokeMode"]
+                values[85] = values[86]["Border"]
+                values[84]["ApplyStrokeMode"] = values[85]
+                values[85] = values[81]
+                values[86] = values[83]
+                values[85](unpackValues(values, 86, 86))
+                values[86] = environment.Instance
+                values[85] = values[86]["new"]
+                values[86] = "Frame"
+                values[85] = values[85](unpackValues(values, 86, 86))
+                values[87] = environment.UDim2
+                values[86] = values[87]["fromOffset"]
+                values[87] = 28
+                values[88] = 242 + values[50]
+                values[86] = values[86](unpackValues(values, 87, 88))
+                values[103] = 835025.0
+                values[85]["Position"] = values[86]
+                values[87] = environment.UDim2
+                values[86] = values[87]["new"]
+                values[87] = 1
+                values[91] = 56
+                values[88] = -values[91]
+                values[89] = 0
+                values[90] = 36
+                values[86] = values[86](unpackValues(values, 87, 90))
+                values[103] = 764245.0
+                values[85]["Size"] = values[86]
+                values[86] = values[18]
+                values[85]["BackgroundColor3"] = values[86]
+                values[86] = 0
+                values[85]["BorderSizePixel"] = values[86]
+                values[86] = values[56]
+                values[85]["Parent"] = values[86]
+                values[87] = environment.Instance
+                values[86] = values[87]["new"]
+                values[87] = "UICorner"
+                values[88] = values[85]
+                values[86] = values[86](unpackValues(values, 87, 88))
+                values[88] = environment.UDim
+                values[87] = values[88]["new"]
+                values[88] = 0
+                values[89] = 10
+                values[103] = 112835.0
+                values[87] = values[87](unpackValues(values, 88, 89))
+                values[86]["CornerRadius"] = values[87]
+                values[87] = environment.Instance
+                values[86] = values[87]["new"]
+                values[87] = "UIStroke"
+                values[88] = values[85]
+                values[86] = values[86](unpackValues(values, 87, 88))
+                values[87] = values[25]
+                values[86]["Color"] = values[87]
+                values[87] = 1
+                values[103] = 423649.0
+                values[86]["Thickness"] = values[87]
+                values[89] = environment.Enum
+                values[88] = values[89]["ApplyStrokeMode"]
+                values[87] = values[88]["Border"]
+                values[86]["ApplyStrokeMode"] = values[87]
+                values[88] = environment.Instance
+                values[87] = values[88]["new"]
+                values[88] = "Frame"
+                values[87] = values[87](unpackValues(values, 88, 88))
+                values[103] = 177560.0
+                values[89] = environment.UDim2
+                values[88] = values[89]["fromOffset"]
+                values[89] = 6
+                values[90] = 6
+                values[88] = values[88](unpackValues(values, 89, 90))
+                values[87]["Size"] = values[88]
+                values[89] = environment.UDim2
+                values[88] = values[89]["fromOffset"]
+                values[89] = 14
+                values[90] = 15
+                values[88] = values[88](unpackValues(values, 89, 90))
+                values[87]["Position"] = values[88]
+                values[88] = values[21]
+                values[87]["BackgroundColor3"] = values[88]
+                values[88] = 0
+                values[103] = 779825.0
+                values[87]["BorderSizePixel"] = values[88]
+                values[88] = values[85]
+                values[87]["Parent"] = values[88]
+                values[89] = environment.Instance
+                values[88] = values[89]["new"]
+                values[89] = "UICorner"
+                values[90] = values[87]
+                values[88] = values[88](unpackValues(values, 89, 90))
+                values[90] = environment.UDim
+                values[89] = values[90]["new"]
+                values[90] = 1
+                values[91] = 0
+                values[89] = values[89](unpackValues(values, 90, 91))
+                values[88]["CornerRadius"] = values[89]
+                values[89] = environment.Instance
+                values[103] = 1046794.0
+                values[88] = values[89]["new"]
+                values[89] = "TextLabel"
+                values[88] = values[88](unpackValues(values, 89, 89))
+                values[89] = 1
+                values[88]["BackgroundTransparency"] = values[89]
+                values[90] = environment.UDim2
+                values[89] = values[90]["fromOffset"]
+                values[90] = 28
+                values[91] = 0
+                values[89] = values[89](unpackValues(values, 90, 91))
+                values[88]["Position"] = values[89]
+                values[103] = 82684.0
+                values[90] = environment.UDim2
+                values[89] = values[90]["new"]
+                values[90] = 1
+                values[94] = 40
+                values[91] = -values[94]
+                values[92] = 1
+                values[93] = 0
+                values[89] = values[89](unpackValues(values, 90, 93))
+                values[103] = 357277.0
+                values[88]["Size"] = values[89]
+                values[91] = environment.Enum
+                values[90] = values[91]["Font"]
+                values[89] = values[90]["Code"]
+                values[88]["Font"] = values[89]
+                values[89] = "No active key"
+                values[88]["Text"] = values[89]
+                values[89] = values[21]
+                values[88]["TextColor3"] = values[89]
+                values[89] = 12
+                values[88]["TextSize"] = values[89]
+                values[91] = environment.Enum
+                values[90] = values[91]["TextXAlignment"]
+                values[89] = values[90]["Left"]
+                values[88]["TextXAlignment"] = values[89]
+                values[89] = values[85]
+                values[103] = 620493.0
+                values[88]["Parent"] = values[89]
+                values[90] = environment.Instance
+                values[89] = values[90]["new"]
+                values[90] = "TextLabel"
+                values[89] = values[89](unpackValues(values, 90, 90))
+                values[90] = 1
+                values[89]["BackgroundTransparency"] = values[90]
+                values[91] = environment.UDim2
+                values[90] = values[91]["new"]
+                values[91] = 0
+                values[103] = 508057.0
+                values[92] = 28
+                values[93] = 1
+                values[95] = 46
+                values[94] = -values[95]
+                values[90] = values[90](unpackValues(values, 91, 94))
+                values[89]["Position"] = values[90]
+                values[91] = environment.UDim2
+                values[90] = values[91]["new"]
+                values[103] = 247217.0
+                values[91] = 1
+                values[95] = 56
+                values[92] = -values[95]
+                values[93] = 0
+                values[94] = 18
+                values[90] = values[90](unpackValues(values, 91, 94))
+                values[89]["Size"] = values[90]
+                values[92] = environment.Enum
+                values[91] = values[92]["Font"]
+                values[90] = values[91]["GothamMedium"]
+                values[89]["Font"] = values[90]
+                values[103] = 802171.0
+                values[90] = values[49]
+                if not values[90] then
+                else
+                  values[103] = 802171.0
+                  values[90] = "Keys are shared"
+                end
+                values[103] = 26759.0
+                if values[90] then
+                else
+                  values[103] = 26759.0
+                  values[90] = "Open Violence District to unlock"
+                end
+                values[103] = 508575.0
+                values[89]["Text"] = values[90]
+                values[90] = values[20]
+                values[89]["TextColor3"] = values[90]
+                values[90] = 10
+                values[89]["TextSize"] = values[90]
+                values[92] = environment.Enum
+                values[91] = values[92]["TextXAlignment"]
+                values[90] = values[91]["Center"]
+                values[89]["TextXAlignment"] = values[90]
+                values[90] = values[56]
+                values[89]["Parent"] = values[90]
+                values[91] = environment.Instance
+                values[90] = values[91]["new"]
+                values[91] = "TextLabel"
+                values[90] = values[90](unpackValues(values, 91, 91))
+                values[103] = 60040.0
+                values[91] = 1
+                values[90]["BackgroundTransparency"] = values[91]
+                values[92] = environment.UDim2
+                values[91] = values[92]["new"]
+                values[92] = 0
+                values[93] = 28
+                values[94] = 1
+                values[96] = 24
+                values[95] = -values[96]
+                values[103] = 577688.0
+                values[91] = values[91](unpackValues(values, 92, 95))
+                values[90]["Position"] = values[91]
+                values[92] = environment.UDim2
+                values[91] = values[92]["new"]
+                values[92] = 1
+                values[96] = 56
+                values[93] = -values[96]
+                values[94] = 0
+                values[103] = 973419.0
+                values[95] = 16
+                values[91] = values[91](unpackValues(values, 92, 95))
+                values[90]["Size"] = values[91]
+                values[93] = environment.Enum
+                values[92] = values[93]["Font"]
+                values[91] = values[92]["Code"]
+                values[90]["Font"] = values[91]
+                values[91] = "KINON HUB"
+                values[90]["Text"] = values[91]
+                values[91] = values[21]
+                values[90]["TextColor3"] = values[91]
+                values[91] = 9
+                values[90]["TextSize"] = values[91]
+                values[103] = 156679.0
+                values[93] = environment.Enum
+                values[92] = values[93]["TextXAlignment"]
+                values[91] = values[92]["Center"]
+                values[90]["TextXAlignment"] = values[91]
+                values[91] = values[56]
+                values[90]["Parent"] = values[91]
+                do
+                  local cells = {}
+                  cells[0] = {values, 2}
+                  cells[1] = {values, 59}
+                  cells[2] = {values, 55}
+                  cells[3] = {values, 53}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[91] = function(...) return functions["callback_62"](captured, ...) end
+                end
+                do
+                  local cells = {}
+                  cells[0] = {values, 29}
+                  cells[1] = {values, 78}
+                  cells[2] = {values, 27}
+                  cells[3] = {values, 33}
+                  cells[4] = {values, 38}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[92] = function(...) return functions["callback_64"](captured, ...) end
+                end
+                values[93] = environment.pcall
+                do
+                  local cells = {}
+                  cells[0] = {values, 92}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[94] = function(...) return functions["callback_65"](captured, ...) end
+                end
+                values[93](unpackValues(values, 94, 94))
+                values[93] = environment.pcall
+                values[103] = 365507.0
+                do
+                  local cells = {}
+                  cells[0] = {values, 5}
+                  cells[1] = {values, 92}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[94] = function(...) return functions["callback_67"](captured, ...) end
+                end
+                values[93](unpackValues(values, 94, 94))
+                do
+                  local cells = {}
+                  cells[0] = {values, 89}
+                  cells[1] = {values, 22}
+                  cells[2] = {values, 23}
+                  cells[3] = {values, 20}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[93] = function(...) return functions["callback_69"](captured, ...) end
+                end
+                do
+                  local cells = {}
+                  cells[0] = {values, 39}
+                  cells[1] = {values, 88}
+                  cells[2] = {values, 31}
+                  cells[3] = {values, 22}
+                  cells[4] = {values, 87}
+                  cells[5] = {values, 36}
+                  cells[6] = {values, 30}
+                  cells[7] = {values, 21}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[94] = function(...) return functions["callback_70"](captured, ...) end
+                end
+                do
+                  local cells = {}
+                  cells[0] = {values, 42}
+                  cells[1] = {values, 43}
+                  cells[2] = {values, 39}
+                  cells[3] = {values, 82}
+                  cells[4] = {values, 31}
+                  cells[5] = {values, 21}
+                  cells[6] = {values, 24}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[95] = function(...) return functions["callback_71"](captured, ...) end
+                end
+                values[97] = environment.task
+                values[96] = values[97]["spawn"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 53}
+                  cells[1] = {values, 94}
+                  cells[2] = {values, 95}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[97] = function(...) return functions["callback_72"](captured, ...) end
+                end
+                values[96](unpackValues(values, 97, 97))
+                values[96] = false
+                do
+                  local cells = {}
+                  cells[0] = {values, 96}
+                  cells[1] = {values, 38}
+                  cells[2] = {values, 83}
+                  cells[3] = {values, 22}
+                  cells[4] = {values, 2}
+                  cells[5] = {values, 84}
+                  cells[6] = {values, 93}
+                  cells[7] = {values, 34}
+                  cells[8] = {values, 94}
+                  cells[9] = {values, 32}
+                  cells[10] = {values, 19}
+                  cells[11] = {values, 25}
+                  cells[12] = {values, 8}
+                  cells[13] = {values, 91}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[97] = function(...) return functions["callback_73"](captured, ...) end
+                end
+                values[98] = false
+                values[103] = 193014.0
+                values[100] = values[82]["MouseButton1Click"]
+                values[100] = values[100]
+                values[99] = values[100]["Connect"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 98}
+                  cells[1] = {values, 43}
+                  cells[2] = {values, 34}
+                  cells[3] = {values, 42}
+                  cells[4] = {values, 82}
+                  cells[5] = {values, 33}
+                  cells[6] = {values, 27}
+                  cells[7] = {values, 78}
+                  cells[8] = {values, 41}
+                  cells[9] = {values, 38}
+                  cells[10] = {values, 93}
+                  cells[11] = {values, 95}
+                  cells[12] = {values, 94}
+                  cells[13] = {values, 97}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[101] = function(...) return functions["callback_76"](captured, ...) end
+                end
+                values[99](unpackValues(values, 100, 101))
+                values[100] = values[83]["MouseButton1Click"]
+                values[100] = values[100]
+                values[99] = values[100]["Connect"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 98}
+                  cells[1] = {values, 83}
+                  cells[2] = {values, 93}
+                  cells[3] = {values, 37}
+                  cells[4] = {values, 29}
+                  cells[5] = {values, 78}
+                  cells[6] = {values, 39}
+                  cells[7] = {values, 97}
+                  cells[8] = {values, 27}
+                  cells[9] = {values, 33}
+                  cells[10] = {values, 38}
+                  cells[11] = {values, 34}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[101] = function(...) return functions["callback_78"](captured, ...) end
+                end
+                values[99](unpackValues(values, 100, 101))
+                values[100] = values[72]["MouseButton1Click"]
+                values[103] = 446243.0
+                values[100] = values[100]
+                values[99] = values[100]["Connect"]
+                do
+                  local cells = {}
+                  cells[0] = {values, 92}
+                  cells[1] = {values, 91}
+                  local captured = setmetatable({}, captureMetatable)
+                  rawset(captured, false, cells)
+                  captureGroups[#captureGroups + 1] = cells
+                  values[101] = function(...) return functions["callback_80"](captured, ...) end
+                end
+                values[99](unpackValues(values, 100, 101))
+                closeCapturedValues(captureGroups, values, 0)
+                return
+              else
+                values[103] = 552112
+                values[103] = 118623
+                values[47] = values[39]
+                values[47] = values[47](unpackValues(values, 48, 47))
+                if not (0 < values[47]) then
+                  values[103] = 382112
+                  do
+                    local cells = {}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[44] = function(...) return functions["extractAssetId"](captured, ...) end
+                  end
+                  do
+                    local cells = {}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[45] = function(...) return functions["callback_41"](captured, ...) end
+                  end
+                  do
+                    local cells = {}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[46] = function(...) return functions["callback_43"](captured, ...) end
+                  end
+                  do
+                    local cells = {}
+                    cells[0] = {values, 26}
+                    cells[1] = {values, 44}
+                    cells[2] = {values, 45}
+                    cells[3] = {values, 46}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[47] = function(...) return functions["callback_47"](captured, ...) end
+                  end
+                  for index = 48, 48 do values[index] = nil end
+                  values[49] = environment.pcall
+                  do
+                    local cells = {}
+                    cells[0] = {values, 48}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[50] = function(...) return functions["callback_49"](captured, ...) end
+                  end
+                  values[49](unpackValues(values, 50, 50))
+                  values[49] = values[48]
+                  if values[49] then
+                  else
+                    values[103] = 382112
+                    values[50] = values[5]
+                    values[49] = values[50]["WaitForChild"]
+                    values[103] = 837070
+                    values[51] = "PlayerGui"
+                    values[49] = values[49](unpackValues(values, 50, 51))
+                  end
+                  values[103] = 499121
+                  values[48] = values[49]
+                  values[49] = environment.ipairs
+                  values[50] = {}
+                  values[51] = values[48]
+                  values[53] = values[5]
+                  values[52] = values[53]["WaitForChild"]
+                  values[54] = "PlayerGui"
+                  local results = packValues(values[52](unpackValues(values, 53, 54)))
+                  registerTop = 52 + results.n - 1
+                  for index = 52, registerTop do values[index] = results[index - 52 + 1] end
+                  for index = 1, registerTop - 50 do values[50][0 + index] = values[50 + index] end
+                  values[49], values[50], values[51] = values[49](unpackValues(values, 50, 50))
+                  values[103] = 499121.0
+                  if type(values[49]) ~= "function" then
+                    local source = values[49]
+                    if type(source) == "table" and getmetatable(source) == nil then
+                      values[49], values[50], values[51] = next, source, nil
+                    else
+                      values[49] = coroutine.wrap(function() for key, value in source do coroutine.yield(key, value) end end)
+                      values[50], values[51] = nil, nil
+                    end
+                  end
+                  do
+                    local leaveLoop277 = 0
+                    while true do
+                      values[103] = 441130.0
+                      local results = packValues(values[49](values[50], values[51]))
+                      for index = 1, 2 do values[51 + index] = results[index] end
+                      if values[52] ~= nil then
+                        values[51] = values[52]
+                        do
+                          local leaveLoop279 = 0
+                          while true do
+                            values[103] = 973365.0
+                            values[55] = values[53]
+                            values[54] = values[55]["FindFirstChild"]
+                            values[56] = "KinonKeySystem"
+                            values[54] = values[54](unpackValues(values, 55, 56))
+                            values[55] = values[54]
+                            if not values[55] then
+                              leaveLoop279 = 277
+                              break
+                            else
+                              values[103] = 973365.0
+                              values[56] = values[54]
+                              values[55] = values[56]["Destroy"]
+                              values[55](unpackValues(values, 56, 56))
+                              local results = packValues(values[49](values[50], values[51]))
+                              for index = 1, 2 do values[51 + index] = results[index] end
+                              if values[52] ~= nil then
+                                values[51] = values[52]
+                                continue
+                              end
+                            end
+                            leaveLoop279 = 280
+                            break
+                          end
+                          if leaveLoop279 == 277 then
+                            continue
+                          elseif leaveLoop279 == 280 then
+                          end
+                        end
+                      end
+                      leaveLoop277 = 280
+                      break
+                    end
+                  end
+                  values[103] = 267653.0
+                  values[49] = values[32]
+                  values[49] = values[49](unpackValues(values, 50, 49))
+                  values[50] = values[49]
+                  if not values[50] then
+                  else
+                    values[103] = 267653.0
+                    values[50] = 0
+                  end
+                  values[103] = 2062.0
+                  if values[50] then
+                  else
+                    values[103] = 2062.0
+                    values[50] = 46
+                  end
+                  values[103] = 871382.0
+                  values[51] = 400
+                  values[52] = 330 + values[50]
+                  values[54] = environment.Instance
+                  values[53] = values[54]["new"]
+                  values[54] = "ScreenGui"
+                  values[53] = values[53](unpackValues(values, 54, 54))
+                  values[54] = "KinonKeySystem"
+                  values[53]["Name"] = values[54]
+                  values[54] = false
+                  values[53]["ResetOnSpawn"] = values[54]
+                  values[54] = true
+                  values[53]["IgnoreGuiInset"] = values[54]
+                  values[54] = 10000
+                  values[53]["DisplayOrder"] = values[54]
+                  values[54] = environment.pcall
+                  do
+                    local cells = {}
+                    cells[0] = {values, 53}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[55] = function(...) return functions["callback_50"](captured, ...) end
+                  end
+                  values[103] = 437287.0
+                  values[54](unpackValues(values, 55, 55))
+                  values[54] = values[48]
+                  values[53]["Parent"] = values[54]
+                  values[54] = {}
+                  values[56] = values[53]["Destroying"]
+                  values[56] = values[56]
+                  values[55] = values[56]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 54}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[57] = function(...) return functions["callback_51"](captured, ...) end
+                  end
+                  values[55](unpackValues(values, 56, 57))
+                  values[103] = 766321.0
+                  values[56] = environment.Instance
+                  values[55] = values[56]["new"]
+                  values[56] = "Frame"
+                  values[55] = values[55](unpackValues(values, 56, 56))
+                  values[57] = environment.UDim2
+                  values[56] = values[57]["fromScale"]
+                  values[57] = 1
+                  values[58] = 1
+                  values[56] = values[56](unpackValues(values, 57, 58))
+                  values[103] = 837025.0
+                  values[55]["Size"] = values[56]
+                  values[57] = environment.Color3
+                  values[56] = values[57]["new"]
+                  values[57] = 0
+                  values[58] = 0
+                  values[59] = 0
+                  values[56] = values[56](unpackValues(values, 57, 59))
+                  values[55]["BackgroundColor3"] = values[56]
+                  values[56] = 1
+                  values[55]["BackgroundTransparency"] = values[56]
+                  values[56] = 0
+                  values[103] = 96878.0
+                  values[55]["BorderSizePixel"] = values[56]
+                  values[56] = true
+                  values[55]["Active"] = values[56]
+                  values[56] = values[53]
+                  values[55]["Parent"] = values[56]
+                  values[58] = values[2]
+                  values[57] = values[58]["Create"]
+                  values[59] = values[55]
+                  values[62] = environment.TweenInfo
+                  values[60] = values[62]["new"]
+                  values[61] = 0.3
+                  values[64] = environment.Enum
+                  values[103] = 424114.0
+                  values[63] = values[64]["EasingStyle"]
+                  values[62] = values[63]["Quad"]
+                  values[60] = values[60](unpackValues(values, 61, 62))
+                  values[61] = {}
+                  values[62] = 0.5
+                  values[61]["BackgroundTransparency"] = values[62]
+                  values[57] = values[57](unpackValues(values, 58, 61))
+                  values[57] = values[57]
+                  values[56] = values[57]["Play"]
+                  values[56](unpackValues(values, 57, 57))
+                  values[57] = environment.Instance
+                  values[56] = values[57]["new"]
+                  values[57] = "Frame"
+                  values[56] = values[56](unpackValues(values, 57, 57))
+                  values[57] = "KeyPanel"
+                  values[56]["Name"] = values[57]
+                  values[103] = 823574.0
+                  values[58] = environment.Vector2
+                  values[57] = values[58]["new"]
+                  values[58] = 0.5
+                  values[59] = 0.5
+                  values[57] = values[57](unpackValues(values, 58, 59))
+                  values[56]["AnchorPoint"] = values[57]
+                  values[58] = environment.UDim2
+                  values[57] = values[58]["fromScale"]
+                  values[58] = 0.5
+                  values[59] = 0.5
+                  values[57] = values[57](unpackValues(values, 58, 59))
+                  values[56]["Position"] = values[57]
+                  values[58] = environment.UDim2
+                  values[103] = 549479.0
+                  values[57] = values[58]["fromOffset"]
+                  values[58] = values[51]
+                  values[59] = values[52]
+                  values[57] = values[57](unpackValues(values, 58, 59))
+                  values[56]["Size"] = values[57]
+                  values[57] = values[16]
+                  values[56]["BackgroundColor3"] = values[57]
+                  values[57] = 0
+                  values[56]["BorderSizePixel"] = values[57]
+                  values[57] = true
+                  values[103] = 139371.0
+                  values[56]["ClipsDescendants"] = values[57]
+                  values[57] = values[55]
+                  values[56]["Parent"] = values[57]
+                  values[58] = environment.Instance
+                  values[57] = values[58]["new"]
+                  values[58] = "UICorner"
+                  values[59] = values[56]
+                  values[57] = values[57](unpackValues(values, 58, 59))
+                  values[59] = environment.UDim
+                  values[58] = values[59]["new"]
+                  values[59] = 0
+                  values[60] = 22
+                  values[103] = 812291.0
+                  values[58] = values[58](unpackValues(values, 59, 60))
+                  values[57]["CornerRadius"] = values[58]
+                  values[58] = environment.Instance
+                  values[57] = values[58]["new"]
+                  values[58] = "UIGradient"
+                  values[59] = values[56]
+                  values[57] = values[57](unpackValues(values, 58, 59))
+                  values[59] = environment.ColorSequence
+                  values[103] = 443664.0
+                  values[58] = values[59]["new"]
+                  values[59] = {}
+                  values[61] = environment.ColorSequenceKeypoint
+                  values[60] = values[61]["new"]
+                  values[61] = 0
+                  values[62] = values[16]
+                  values[60] = values[60](unpackValues(values, 61, 62))
+                  values[62] = environment.ColorSequenceKeypoint
+                  values[61] = values[62]["new"]
+                  values[62] = 1
+                  values[63] = values[15]
+                  values[103] = 482337.0
+                  local results = packValues(values[61](unpackValues(values, 62, 63)))
+                  registerTop = 61 + results.n - 1
+                  for index = 61, registerTop do values[index] = results[index - 61 + 1] end
+                  for index = 1, registerTop - 59 do values[59][0 + index] = values[59 + index] end
+                  values[103] = 482337
+                  values[103] = 482337.0
+                  values[58] = values[58](unpackValues(values, 59, 59))
+                  values[57]["Color"] = values[58]
+                  values[58] = 135
+                  values[57]["Rotation"] = values[58]
+                  values[59] = environment.Instance
+                  values[58] = values[59]["new"]
+                  values[59] = "UIStroke"
+                  values[103] = 675808.0
+                  values[60] = values[56]
+                  values[58] = values[58](unpackValues(values, 59, 60))
+                  values[60] = environment.Color3
+                  values[59] = values[60]["fromRGB"]
+                  values[60] = 60
+                  values[61] = 60
+                  values[62] = 60
+                  values[59] = values[59](unpackValues(values, 60, 62))
+                  values[58]["Color"] = values[59]
+                  values[59] = 1
+                  values[58]["Thickness"] = values[59]
+                  values[61] = environment.Enum
+                  values[60] = values[61]["ApplyStrokeMode"]
+                  values[103] = 695177.0
+                  values[59] = values[60]["Border"]
+                  values[58]["ApplyStrokeMode"] = values[59]
+                  values[60] = environment.Instance
+                  values[59] = values[60]["new"]
+                  values[60] = "UIScale"
+                  values[61] = values[56]
+                  values[59] = values[59](unpackValues(values, 60, 61))
+                  values[60] = 0.7
+                  values[59]["Scale"] = values[60]
+                  values[60] = 1
+                  values[62] = environment.workspace
+                  values[61] = values[62]["CurrentCamera"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 61}
+                    cells[1] = {values, 51}
+                    cells[2] = {values, 52}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[62] = function(...) return functions["callback_53"](captured, ...) end
+                  end
+                  values[63] = values[62]
+                  values[103] = 892242.0
+                  values[63] = values[63](unpackValues(values, 64, 63))
+                  values[60] = values[63]
+                  values[65] = values[2]
+                  values[64] = values[65]["Create"]
+                  values[66] = values[59]
+                  values[69] = environment.TweenInfo
+                  values[67] = values[69]["new"]
+                  values[68] = 0.35
+                  values[72] = environment.Enum
+                  values[71] = values[72]["EasingStyle"]
+                  values[69] = values[71]["Back"]
+                  values[72] = environment.Enum
+                  values[71] = values[72]["EasingDirection"]
+                  values[70] = values[71]["Out"]
+                  values[67] = values[67](unpackValues(values, 68, 70))
+                  values[68] = {}
+                  values[103] = 28910.0
+                  values[69] = values[60]
+                  values[68]["Scale"] = values[69]
+                  values[64] = values[64](unpackValues(values, 65, 68))
+                  values[64] = values[64]
+                  values[63] = values[64]["Play"]
+                  values[63](unpackValues(values, 64, 64))
+                  values[63] = values[61]
+                  if not values[63] then
+                  else
+                    values[103] = 28910.0
+                    values[65] = values[54]
+                    values[64] = #values[65]
+                    values[63] = values[64] + 1
+                    values[66] = values[61]
+                    values[65] = values[66]["GetPropertyChangedSignal"]
+                    values[67] = "ViewportSize"
+                    values[65] = values[65](unpackValues(values, 66, 67))
+                    values[65] = values[65]
+                    values[64] = values[65]["Connect"]
+                    do
+                      local cells = {}
+                      cells[0] = {values, 62}
+                      cells[1] = {values, 60}
+                      cells[2] = {values, 59}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[66] = function(...) return functions["callback_54"](captured, ...) end
+                    end
+                    values[64] = values[64](unpackValues(values, 65, 66))
+                    values[103] = 12396.0
+                    values[54][values[63]] = values[64]
+                  end
+                  values[103] = 758159.0
+                  values[64] = environment.Instance
+                  values[63] = values[64]["new"]
+                  values[64] = "Frame"
+                  values[63] = values[63](unpackValues(values, 64, 64))
+                  values[65] = environment.UDim2
+                  values[64] = values[65]["new"]
+                  values[65] = 1
+                  values[69] = 112
+                  values[66] = -values[69]
+                  values[67] = 0
+                  values[68] = 58
+                  values[64] = values[64](unpackValues(values, 65, 68))
+                  values[63]["Size"] = values[64]
+                  values[103] = 393573.0
+                  values[65] = environment.UDim2
+                  values[64] = values[65]["fromOffset"]
+                  values[65] = 28
+                  values[66] = 22
+                  values[64] = values[64](unpackValues(values, 65, 66))
+                  values[63]["Position"] = values[64]
+                  values[64] = 1
+                  values[63]["BackgroundTransparency"] = values[64]
+                  values[64] = true
+                  values[63]["Active"] = values[64]
+                  values[64] = values[56]
+                  values[63]["Parent"] = values[64]
+                  values[103] = 1032141.0
+                  values[65] = environment.Instance
+                  values[64] = values[65]["new"]
+                  values[65] = "Frame"
+                  values[64] = values[64](unpackValues(values, 65, 65))
+                  values[66] = environment.UDim2
+                  values[65] = values[66]["fromOffset"]
+                  values[66] = 42
+                  values[67] = 42
+                  values[65] = values[65](unpackValues(values, 66, 67))
+                  values[64]["Size"] = values[65]
+                  values[66] = environment.UDim2
+                  values[65] = values[66]["fromOffset"]
+                  values[66] = 0
+                  values[67] = 8
+                  values[65] = values[65](unpackValues(values, 66, 67))
+                  values[103] = 160318.0
+                  values[64]["Position"] = values[65]
+                  values[66] = environment.Color3
+                  values[65] = values[66]["fromRGB"]
+                  values[66] = 32
+                  values[67] = 32
+                  values[68] = 32
+                  values[65] = values[65](unpackValues(values, 66, 68))
+                  values[64]["BackgroundColor3"] = values[65]
+                  values[103] = 914429.0
+                  values[65] = 0
+                  values[64]["BorderSizePixel"] = values[65]
+                  values[65] = values[63]
+                  values[64]["Parent"] = values[65]
+                  values[66] = environment.Instance
+                  values[65] = values[66]["new"]
+                  values[66] = "UICorner"
+                  values[67] = values[64]
+                  values[65] = values[65](unpackValues(values, 66, 67))
+                  values[103] = 483470.0
+                  values[67] = environment.UDim
+                  values[66] = values[67]["new"]
+                  values[67] = 0
+                  values[68] = 12
+                  values[66] = values[66](unpackValues(values, 67, 68))
+                  values[65]["CornerRadius"] = values[66]
+                  values[66] = environment.Instance
+                  values[65] = values[66]["new"]
+                  values[66] = "UIStroke"
+                  values[67] = values[64]
+                  values[65] = values[65](unpackValues(values, 66, 67))
+                  values[67] = environment.Color3
+                  values[66] = values[67]["fromRGB"]
+                  values[67] = 60
+                  values[68] = 60
+                  values[69] = 60
+                  values[103] = 576667.0
+                  values[66] = values[66](unpackValues(values, 67, 69))
+                  values[65]["Color"] = values[66]
+                  values[66] = 1
+                  values[65]["Thickness"] = values[66]
+                  values[68] = environment.Enum
+                  values[67] = values[68]["ApplyStrokeMode"]
+                  values[66] = values[67]["Border"]
+                  values[65]["ApplyStrokeMode"] = values[66]
+                  values[67] = environment.Instance
+                  values[66] = values[67]["new"]
+                  values[67] = "ImageLabel"
+                  values[66] = values[66](unpackValues(values, 67, 67))
+                  values[68] = environment.UDim2
+                  values[67] = values[68]["fromScale"]
+                  values[103] = 695246.0
+                  values[68] = 1
+                  values[69] = 1
+                  values[67] = values[67](unpackValues(values, 68, 69))
+                  values[66]["Size"] = values[67]
+                  values[67] = 1
+                  values[66]["BackgroundTransparency"] = values[67]
+                  values[69] = environment.Enum
+                  values[68] = values[69]["ScaleType"]
+                  values[67] = values[68]["Crop"]
+                  values[66]["ScaleType"] = values[67]
+                  values[67] = ""
+                  values[66]["Image"] = values[67]
+                  values[103] = 124917.0
+                  values[67] = values[64]
+                  values[66]["Parent"] = values[67]
+                  values[68] = environment.Instance
+                  values[67] = values[68]["new"]
+                  values[68] = "UICorner"
+                  values[69] = values[66]
+                  values[67] = values[67](unpackValues(values, 68, 69))
+                  values[69] = environment.UDim
+                  values[68] = values[69]["new"]
+                  values[69] = 0
+                  values[70] = 12
+                  values[68] = values[68](unpackValues(values, 69, 70))
+                  values[67]["CornerRadius"] = values[68]
+                  values[68] = environment.Instance
+                  values[67] = values[68]["new"]
+                  values[103] = 639358.0
+                  values[68] = "TextLabel"
+                  values[67] = values[67](unpackValues(values, 68, 68))
+                  values[69] = environment.UDim2
+                  values[68] = values[69]["fromScale"]
+                  values[69] = 1
+                  values[70] = 1
+                  values[68] = values[68](unpackValues(values, 69, 70))
+                  values[67]["Size"] = values[68]
+                  values[68] = 1
+                  values[67]["BackgroundTransparency"] = values[68]
+                  values[70] = environment.Enum
+                  values[69] = values[70]["Font"]
+                  values[68] = values[69]["GothamBold"]
+                  values[67]["Font"] = values[68]
+                  values[68] = "K"
+                  values[67]["Text"] = values[68]
+                  values[103] = 688121.0
+                  values[68] = values[24]
+                  values[67]["TextColor3"] = values[68]
+                  values[68] = 20
+                  values[67]["TextSize"] = values[68]
+                  values[68] = false
+                  values[67]["Visible"] = values[68]
+                  values[68] = values[64]
+                  values[67]["Parent"] = values[68]
+                  values[68] = values[47]
+                  values[69] = values[66]
+                  values[103] = 956678.0
+                  values[70] = values[67]
+                  values[68](unpackValues(values, 69, 70))
+                  values[69] = environment.Instance
+                  values[68] = values[69]["new"]
+                  values[69] = "TextLabel"
+                  values[68] = values[68](unpackValues(values, 69, 69))
+                  values[69] = 1
+                  values[68]["BackgroundTransparency"] = values[69]
+                  values[70] = environment.UDim2
+                  values[69] = values[70]["fromOffset"]
+                  values[70] = 56
+                  values[103] = 124047.0
+                  values[71] = 8
+                  values[69] = values[69](unpackValues(values, 70, 71))
+                  values[68]["Position"] = values[69]
+                  values[70] = environment.UDim2
+                  values[69] = values[70]["new"]
+                  values[70] = 1
+                  values[74] = 56
+                  values[71] = -values[74]
+                  values[72] = 0
+                  values[73] = 26
+                  values[103] = 628392.0
+                  values[69] = values[69](unpackValues(values, 70, 73))
+                  values[68]["Size"] = values[69]
+                  values[71] = environment.Enum
+                  values[70] = values[71]["Font"]
+                  values[69] = values[70]["GothamBold"]
+                  values[68]["Font"] = values[69]
+                  values[69] = "KINON HUB"
+                  values[68]["Text"] = values[69]
+                  values[69] = values[24]
+                  values[68]["TextColor3"] = values[69]
+                  values[69] = 20
+                  values[68]["TextSize"] = values[69]
+                  values[71] = environment.Enum
+                  values[70] = values[71]["TextXAlignment"]
+                  values[103] = 1019331.0
+                  values[69] = values[70]["Left"]
+                  values[68]["TextXAlignment"] = values[69]
+                  values[69] = values[63]
+                  values[68]["Parent"] = values[69]
+                  values[70] = environment.Instance
+                  values[69] = values[70]["new"]
+                  values[70] = "Frame"
+                  values[69] = values[69](unpackValues(values, 70, 70))
+                  values[71] = environment.UDim2
+                  values[70] = values[71]["fromOffset"]
+                  values[71] = 56
+                  values[72] = 34
+                  values[103] = 111540.0
+                  values[70] = values[70](unpackValues(values, 71, 72))
+                  values[69]["Position"] = values[70]
+                  values[71] = environment.UDim2
+                  values[70] = values[71]["new"]
+                  values[71] = 1
+                  values[75] = 56
+                  values[72] = -values[75]
+                  values[73] = 0
+                  values[74] = 16
+                  values[70] = values[70](unpackValues(values, 71, 74))
+                  values[69]["Size"] = values[70]
+                  values[70] = 1
+                  values[103] = 84186.0
+                  values[69]["BackgroundTransparency"] = values[70]
+                  values[70] = values[63]
+                  values[69]["Parent"] = values[70]
+                  values[71] = environment.Instance
+                  values[70] = values[71]["new"]
+                  values[71] = "Frame"
+                  values[70] = values[70](unpackValues(values, 71, 71))
+                  values[72] = environment.UDim2
+                  values[71] = values[72]["fromOffset"]
+                  values[72] = 6
+                  values[73] = 6
+                  values[71] = values[71](unpackValues(values, 72, 73))
+                  values[70]["Size"] = values[71]
+                  values[103] = 994489.0
+                  values[72] = environment.UDim2
+                  values[71] = values[72]["fromOffset"]
+                  values[72] = 0
+                  values[73] = 5
+                  values[71] = values[71](unpackValues(values, 72, 73))
+                  values[70]["Position"] = values[71]
+                  values[71] = values[49]
+                  if not values[71] then
+                  else
+                    values[103] = 994489.0
+                    values[71] = values[22]
+                  end
+                  values[103] = 337007.0
+                  if values[71] then
+                  else
+                    values[103] = 337007.0
+                    values[71] = values[23]
+                  end
+                  values[103] = 475053.0
+                  values[70]["BackgroundColor3"] = values[71]
+                  values[71] = 0
+                  values[70]["BorderSizePixel"] = values[71]
+                  values[71] = values[69]
+                  values[70]["Parent"] = values[71]
+                  values[72] = environment.Instance
+                  values[71] = values[72]["new"]
+                  values[72] = "UICorner"
+                  values[73] = values[70]
+                  values[71] = values[71](unpackValues(values, 72, 73))
+                  values[73] = environment.UDim
+                  values[103] = 584782.0
+                  values[72] = values[73]["new"]
+                  values[73] = 1
+                  values[74] = 0
+                  values[72] = values[72](unpackValues(values, 73, 74))
+                  values[71]["CornerRadius"] = values[72]
+                  values[72] = environment.Instance
+                  values[71] = values[72]["new"]
+                  values[72] = "TextLabel"
+                  values[71] = values[71](unpackValues(values, 72, 72))
+                  values[72] = 1
+                  values[71]["BackgroundTransparency"] = values[72]
+                  values[73] = environment.UDim2
+                  values[72] = values[73]["fromOffset"]
+                  values[73] = 12
+                  values[74] = 0
+                  values[72] = values[72](unpackValues(values, 73, 74))
+                  values[103] = 571129.0
+                  values[71]["Position"] = values[72]
+                  values[73] = environment.UDim2
+                  values[72] = values[73]["new"]
+                  values[73] = 1
+                  values[77] = 12
+                  values[74] = -values[77]
+                  values[75] = 1
+                  values[76] = 0
+                  values[72] = values[72](unpackValues(values, 73, 76))
+                  values[71]["Size"] = values[72]
+                  values[74] = environment.Enum
+                  values[73] = values[74]["Font"]
+                  values[72] = values[73]["GothamMedium"]
+                  values[71]["Font"] = values[72]
+                  values[103] = 780365.0
+                  values[72] = values[49]
+                  if not values[72] then
+                  else
+                    values[103] = 780365.0
+                    values[72] = "Violence District"
+                  end
+                  values[103] = 221109.0
+                  if values[72] then
+                  else
+                    values[103] = 221109.0
+                    values[72] = "Game not supported"
+                  end
+                  values[103] = 855795.0
+                  values[71]["Text"] = values[72]
+                  values[72] = values[49]
+                  if not values[72] then
+                  else
+                    values[103] = 855795.0
+                    values[73] = environment.Color3
+                    values[72] = values[73]["fromRGB"]
+                    values[73] = 175
+                    values[74] = 175
+                    values[75] = 175
+                    values[72] = values[72](unpackValues(values, 73, 75))
+                  end
+                  values[103] = 458695.0
+                  if values[72] then
+                  else
+                    values[103] = 458695.0
+                    values[72] = values[23]
+                  end
+                  values[103] = 642323.0
+                  values[71]["TextColor3"] = values[72]
+                  values[72] = 10
+                  values[71]["TextSize"] = values[72]
+                  values[74] = environment.Enum
+                  values[73] = values[74]["TextXAlignment"]
+                  values[72] = values[73]["Left"]
+                  values[71]["TextXAlignment"] = values[72]
+                  values[72] = values[69]
+                  values[71]["Parent"] = values[72]
+                  values[73] = environment.Instance
+                  values[72] = values[73]["new"]
+                  values[73] = "TextButton"
+                  values[103] = 458093.0
+                  values[72] = values[72](unpackValues(values, 73, 73))
+                  values[74] = environment.UDim2
+                  values[73] = values[74]["fromOffset"]
+                  values[74] = 32
+                  values[75] = 32
+                  values[73] = values[73](unpackValues(values, 74, 75))
+                  values[72]["Size"] = values[73]
+                  values[74] = environment.UDim2
+                  values[73] = values[74]["new"]
+                  values[74] = 1
+                  values[78] = 60
+                  values[75] = -values[78]
+                  values[76] = 0
+                  values[77] = 30
+                  values[73] = values[73](unpackValues(values, 74, 77))
+                  values[103] = 273347.0
+                  values[72]["Position"] = values[73]
+                  values[74] = environment.Color3
+                  values[73] = values[74]["fromRGB"]
+                  values[74] = 32
+                  values[75] = 32
+                  values[76] = 32
+                  values[73] = values[73](unpackValues(values, 74, 76))
+                  values[72]["BackgroundColor3"] = values[73]
+                  values[73] = 0
+                  values[72]["BorderSizePixel"] = values[73]
+                  values[103] = 205453.0
+                  values[73] = "X"
+                  values[72]["Text"] = values[73]
+                  values[74] = environment.Color3
+                  values[73] = values[74]["fromRGB"]
+                  values[74] = 175
+                  values[75] = 175
+                  values[76] = 175
+                  values[73] = values[73](unpackValues(values, 74, 76))
+                  values[72]["TextColor3"] = values[73]
+                  values[75] = environment.Enum
+                  values[103] = 261324.0
+                  values[74] = values[75]["Font"]
+                  values[73] = values[74]["GothamBold"]
+                  values[72]["Font"] = values[73]
+                  values[73] = 14
+                  values[72]["TextSize"] = values[73]
+                  values[73] = false
+                  values[72]["AutoButtonColor"] = values[73]
+                  values[73] = values[56]
+                  values[103] = 719446.0
+                  values[72]["Parent"] = values[73]
+                  values[74] = environment.Instance
+                  values[73] = values[74]["new"]
+                  values[74] = "UICorner"
+                  values[75] = values[72]
+                  values[73] = values[73](unpackValues(values, 74, 75))
+                  values[75] = environment.UDim
+                  values[74] = values[75]["new"]
+                  values[75] = 0
+                  values[76] = 10
+                  values[74] = values[74](unpackValues(values, 75, 76))
+                  values[73]["CornerRadius"] = values[74]
+                  values[74] = environment.Instance
+                  values[73] = values[74]["new"]
+                  values[74] = "UIStroke"
+                  values[103] = 741478.0
+                  values[75] = values[72]
+                  values[73] = values[73](unpackValues(values, 74, 75))
+                  values[74] = values[25]
+                  values[73]["Color"] = values[74]
+                  values[74] = 1
+                  values[73]["Thickness"] = values[74]
+                  values[76] = environment.Enum
+                  values[75] = values[76]["ApplyStrokeMode"]
+                  values[103] = 975727.0
+                  values[74] = values[75]["Border"]
+                  values[73]["ApplyStrokeMode"] = values[74]
+                  values[75] = values[72]["MouseEnter"]
+                  values[75] = values[75]
+                  values[74] = values[75]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 2}
+                    cells[1] = {values, 72}
+                    cells[2] = {values, 24}
+                    cells[3] = {values, 73}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[76] = function(...) return functions["callback_55"](captured, ...) end
+                  end
+                  values[74](unpackValues(values, 75, 76))
+                  values[75] = values[72]["MouseLeave"]
+                  values[75] = values[75]
+                  values[74] = values[75]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 2}
+                    cells[1] = {values, 72}
+                    cells[2] = {values, 73}
+                    cells[3] = {values, 25}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[76] = function(...) return functions["callback_56"](captured, ...) end
+                  end
+                  values[74](unpackValues(values, 75, 76))
+                  values[103] = 521986.0
+                  values[75] = environment.Instance
+                  values[74] = values[75]["new"]
+                  values[75] = "Frame"
+                  values[74] = values[74](unpackValues(values, 75, 75))
+                  values[76] = environment.UDim2
+                  values[75] = values[76]["new"]
+                  values[76] = 1
+                  values[80] = 56
+                  values[103] = 168778.0
+                  values[77] = -values[80]
+                  values[78] = 0
+                  values[79] = 1
+                  values[75] = values[75](unpackValues(values, 76, 79))
+                  values[74]["Size"] = values[75]
+                  values[76] = environment.UDim2
+                  values[75] = values[76]["fromOffset"]
+                  values[76] = 28
+                  values[77] = 94
+                  values[103] = 693642.0
+                  values[75] = values[75](unpackValues(values, 76, 77))
+                  values[74]["Position"] = values[75]
+                  values[75] = values[25]
+                  values[74]["BackgroundColor3"] = values[75]
+                  values[75] = 0
+                  values[74]["BorderSizePixel"] = values[75]
+                  values[75] = values[56]
+                  values[74]["Parent"] = values[75]
+                  values[75] = values[49]
+                  values[103] = 357082.0
+                  if values[75] then
+                  else
+                    values[103] = 357082.0
+                    values[76] = environment.Instance
+                    values[75] = values[76]["new"]
+                    values[76] = "Frame"
+                    values[75] = values[75](unpackValues(values, 76, 76))
+                    values[77] = environment.UDim2
+                    values[76] = values[77]["fromOffset"]
+                    values[77] = 28
+                    values[78] = 106
+                    values[103] = 45111.0
+                    values[76] = values[76](unpackValues(values, 77, 78))
+                    values[75]["Position"] = values[76]
+                    values[77] = environment.UDim2
+                    values[76] = values[77]["new"]
+                    values[77] = 1
+                    values[81] = 56
+                    values[78] = -values[81]
+                    values[79] = 0
+                    values[80] = 34
+                    values[76] = values[76](unpackValues(values, 77, 80))
+                    values[75]["Size"] = values[76]
+                    values[103] = 827933.0
+                    values[77] = environment.Color3
+                    values[76] = values[77]["fromRGB"]
+                    values[77] = 38
+                    values[78] = 16
+                    values[79] = 16
+                    values[76] = values[76](unpackValues(values, 77, 79))
+                    values[75]["BackgroundColor3"] = values[76]
+                    values[76] = 0
+                    values[75]["BorderSizePixel"] = values[76]
+                    values[76] = values[56]
+                    values[75]["Parent"] = values[76]
+                    values[77] = environment.Instance
+                    values[103] = 936000.0
+                    values[76] = values[77]["new"]
+                    values[77] = "UICorner"
+                    values[78] = values[75]
+                    values[76] = values[76](unpackValues(values, 77, 78))
+                    values[78] = environment.UDim
+                    values[77] = values[78]["new"]
+                    values[78] = 0
+                    values[79] = 10
+                    values[77] = values[77](unpackValues(values, 78, 79))
+                    values[76]["CornerRadius"] = values[77]
+                    values[77] = environment.Instance
+                    values[76] = values[77]["new"]
+                    values[77] = "UIStroke"
+                    values[78] = values[75]
+                    values[76] = values[76](unpackValues(values, 77, 78))
+                    values[78] = environment.Color3
+                    values[103] = 712264.0
+                    values[77] = values[78]["fromRGB"]
+                    values[78] = 90
+                    values[79] = 30
+                    values[80] = 30
+                    values[77] = values[77](unpackValues(values, 78, 80))
+                    values[76]["Color"] = values[77]
+                    values[77] = 1
+                    values[76]["Thickness"] = values[77]
+                    values[79] = environment.Enum
+                    values[78] = values[79]["ApplyStrokeMode"]
+                    values[77] = values[78]["Border"]
+                    values[76]["ApplyStrokeMode"] = values[77]
+                    values[78] = environment.Instance
+                    values[77] = values[78]["new"]
+                    values[103] = 813365.0
+                    values[78] = "TextLabel"
+                    values[77] = values[77](unpackValues(values, 78, 78))
+                    values[78] = 1
+                    values[77]["BackgroundTransparency"] = values[78]
+                    values[79] = environment.UDim2
+                    values[78] = values[79]["fromScale"]
+                    values[79] = 1
+                    values[80] = 1
+                    values[103] = 876432.0
+                    values[78] = values[78](unpackValues(values, 79, 80))
+                    values[77]["Size"] = values[78]
+                    values[80] = environment.Enum
+                    values[79] = values[80]["Font"]
+                    values[78] = values[79]["GothamMedium"]
+                    values[77]["Font"] = values[78]
+                    values[78] = "This script only works in Violence District"
+                    values[77]["Text"] = values[78]
+                    values[79] = environment.Color3
+                    values[78] = values[79]["fromRGB"]
+                    values[79] = 255
+                    values[80] = 170
+                    values[81] = 170
+                    values[78] = values[78](unpackValues(values, 79, 81))
+                    values[77]["TextColor3"] = values[78]
+                    values[78] = 11
+                    values[103] = 227656.0
+                    values[77]["TextSize"] = values[78]
+                    values[78] = values[75]
+                    values[77]["Parent"] = values[78]
+                  end
+                  values[103] = 342154.0
+                  values[76] = environment.Instance
+                  values[75] = values[76]["new"]
+                  values[76] = "TextLabel"
+                  values[75] = values[75](unpackValues(values, 76, 76))
+                  values[76] = 1
+                  values[75]["BackgroundTransparency"] = values[76]
+                  values[77] = environment.UDim2
+                  values[76] = values[77]["fromOffset"]
+                  values[77] = 30
+                  values[78] = 108 + values[50]
+                  values[76] = values[76](unpackValues(values, 77, 78))
+                  values[75]["Position"] = values[76]
+                  values[77] = environment.UDim2
+                  values[76] = values[77]["new"]
+                  values[77] = 1
+                  values[103] = 308407.0
+                  values[81] = 60
+                  values[78] = -values[81]
+                  values[79] = 0
+                  values[80] = 14
+                  values[76] = values[76](unpackValues(values, 77, 80))
+                  values[75]["Size"] = values[76]
+                  values[78] = environment.Enum
+                  values[77] = values[78]["Font"]
+                  values[76] = values[77]["GothamBold"]
+                  values[75]["Font"] = values[76]
+                  values[76] = "ACCESS KEY"
+                  values[103] = 558284.0
+                  values[75]["Text"] = values[76]
+                  values[76] = values[20]
+                  values[75]["TextColor3"] = values[76]
+                  values[76] = 9
+                  values[75]["TextSize"] = values[76]
+                  values[78] = environment.Enum
+                  values[77] = values[78]["TextXAlignment"]
+                  values[76] = values[77]["Left"]
+                  values[75]["TextXAlignment"] = values[76]
+                  values[76] = values[56]
+                  values[75]["Parent"] = values[76]
+                  values[103] = 809077.0
+                  values[77] = environment.Instance
+                  values[76] = values[77]["new"]
+                  values[77] = "Frame"
+                  values[76] = values[76](unpackValues(values, 77, 77))
+                  values[78] = environment.UDim2
+                  values[77] = values[78]["fromOffset"]
+                  values[78] = 28
+                  values[79] = 126 + values[50]
+                  values[77] = values[77](unpackValues(values, 78, 79))
+                  values[76]["Position"] = values[77]
+                  values[78] = environment.UDim2
+                  values[77] = values[78]["new"]
+                  values[103] = 969666.0
+                  values[78] = 1
+                  values[82] = 56
+                  values[79] = -values[82]
+                  values[80] = 0
+                  values[81] = 46
+                  values[77] = values[77](unpackValues(values, 78, 81))
+                  values[76]["Size"] = values[77]
+                  values[77] = values[18]
+                  values[76]["BackgroundColor3"] = values[77]
+                  values[77] = 0
+                  values[76]["BorderSizePixel"] = values[77]
+                  values[77] = values[56]
+                  values[76]["Parent"] = values[77]
+                  values[78] = environment.Instance
+                  values[77] = values[78]["new"]
+                  values[103] = 178280.0
+                  values[78] = "UICorner"
+                  values[79] = values[76]
+                  values[77] = values[77](unpackValues(values, 78, 79))
+                  values[79] = environment.UDim
+                  values[78] = values[79]["new"]
+                  values[79] = 0
+                  values[80] = 12
+                  values[78] = values[78](unpackValues(values, 79, 80))
+                  values[77]["CornerRadius"] = values[78]
+                  values[78] = environment.Instance
+                  values[77] = values[78]["new"]
+                  values[103] = 508180.0
+                  values[78] = "UIStroke"
+                  values[79] = values[76]
+                  values[77] = values[77](unpackValues(values, 78, 79))
+                  values[78] = values[25]
+                  values[77]["Color"] = values[78]
+                  values[78] = 1
+                  values[77]["Thickness"] = values[78]
+                  values[80] = environment.Enum
+                  values[79] = values[80]["ApplyStrokeMode"]
+                  values[78] = values[79]["Border"]
+                  values[77]["ApplyStrokeMode"] = values[78]
+                  values[79] = environment.Instance
+                  values[78] = values[79]["new"]
+                  values[79] = "TextBox"
+                  values[78] = values[78](unpackValues(values, 79, 79))
+                  values[103] = 675344.0
+                  values[80] = environment.UDim2
+                  values[79] = values[80]["new"]
+                  values[80] = 1
+                  values[84] = 28
+                  values[81] = -values[84]
+                  values[82] = 1
+                  values[83] = 0
+                  values[79] = values[79](unpackValues(values, 80, 83))
+                  values[78]["Size"] = values[79]
+                  values[80] = environment.UDim2
+                  values[79] = values[80]["fromOffset"]
+                  values[103] = 100105.0
+                  values[80] = 14
+                  values[81] = 0
+                  values[79] = values[79](unpackValues(values, 80, 81))
+                  values[78]["Position"] = values[79]
+                  values[79] = 1
+                  values[78]["BackgroundTransparency"] = values[79]
+                  values[79] = false
+                  values[78]["ClearTextOnFocus"] = values[79]
+                  values[103] = 710704.0
+                  values[79] = "Paste your key"
+                  values[78]["PlaceholderText"] = values[79]
+                  values[79] = values[21]
+                  values[78]["PlaceholderColor3"] = values[79]
+                  values[79] = values[37]
+                  values[79] = values[79](unpackValues(values, 80, 79))
+                  if values[79] then
+                  else
+                    values[103] = 710704.0
+                    values[79] = ""
+                  end
+                  values[103] = 382293.0
+                  values[78]["Text"] = values[79]
+                  values[79] = values[19]
+                  values[78]["TextColor3"] = values[79]
+                  values[81] = environment.Enum
+                  values[80] = values[81]["Font"]
+                  values[79] = values[80]["Code"]
+                  values[78]["Font"] = values[79]
+                  values[79] = 13
+                  values[78]["TextSize"] = values[79]
+                  values[81] = environment.Enum
+                  values[80] = values[81]["TextXAlignment"]
+                  values[103] = 165860.0
+                  values[79] = values[80]["Left"]
+                  values[78]["TextXAlignment"] = values[79]
+                  values[81] = environment.Enum
+                  values[80] = values[81]["TextTruncate"]
+                  values[79] = values[80]["AtEnd"]
+                  values[78]["TextTruncate"] = values[79]
+                  values[79] = values[76]
+                  values[78]["Parent"] = values[79]
+                  values[103] = 325019.0
+                  values[80] = values[78]["Focused"]
+                  values[80] = values[80]
+                  values[79] = values[80]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 2}
+                    cells[1] = {values, 77}
+                    cells[2] = {values, 24}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[81] = function(...) return functions["callback_57"](captured, ...) end
+                  end
+                  values[79](unpackValues(values, 80, 81))
+                  values[80] = values[78]["FocusLost"]
+                  values[80] = values[80]
+                  values[79] = values[80]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 2}
+                    cells[1] = {values, 77}
+                    cells[2] = {values, 25}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[81] = function(...) return functions["callback_58"](captured, ...) end
+                  end
+                  values[79](unpackValues(values, 80, 81))
+                  values[103] = 1033000.0
+                  values[80] = environment.Instance
+                  values[79] = values[80]["new"]
+                  values[80] = "Frame"
+                  values[79] = values[79](unpackValues(values, 80, 80))
+                  values[81] = environment.UDim2
+                  values[80] = values[81]["fromOffset"]
+                  values[81] = 28
+                  values[82] = 186 + values[50]
+                  values[103] = 358352.0
+                  values[80] = values[80](unpackValues(values, 81, 82))
+                  values[79]["Position"] = values[80]
+                  values[81] = environment.UDim2
+                  values[80] = values[81]["new"]
+                  values[81] = 1
+                  values[85] = 56
+                  values[82] = -values[85]
+                  values[83] = 0
+                  values[84] = 42
+                  values[80] = values[80](unpackValues(values, 81, 84))
+                  values[103] = 823199.0
+                  values[79]["Size"] = values[80]
+                  values[80] = 1
+                  values[79]["BackgroundTransparency"] = values[80]
+                  values[80] = values[56]
+                  values[79]["Parent"] = values[80]
+                  values[81] = environment.Instance
+                  values[80] = values[81]["new"]
+                  values[81] = "UIListLayout"
+                  values[82] = values[79]
+                  values[80] = values[80](unpackValues(values, 81, 82))
+                  values[83] = environment.Enum
+                  values[82] = values[83]["FillDirection"]
+                  values[81] = values[82]["Horizontal"]
+                  values[80]["FillDirection"] = values[81]
+                  values[103] = 909043.0
+                  values[82] = environment.UDim
+                  values[81] = values[82]["new"]
+                  values[82] = 0
+                  values[83] = 8
+                  values[81] = values[81](unpackValues(values, 82, 83))
+                  values[80]["Padding"] = values[81]
+                  values[83] = environment.Enum
+                  values[82] = values[83]["HorizontalAlignment"]
+                  values[81] = values[82]["Center"]
+                  values[80]["HorizontalAlignment"] = values[81]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 2}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[81] = function(...) return functions["callback_59"](captured, ...) end
+                  end
+                  values[103] = 364490.0
+                  values[83] = environment.Instance
+                  values[82] = values[83]["new"]
+                  values[83] = "TextButton"
+                  values[82] = values[82](unpackValues(values, 83, 83))
+                  values[84] = environment.UDim2
+                  values[83] = values[84]["new"]
+                  values[84] = 0.5
+                  values[88] = 4
+                  values[85] = -values[88]
+                  values[86] = 1
+                  values[103] = 772591.0
+                  values[87] = 0
+                  values[83] = values[83](unpackValues(values, 84, 87))
+                  values[82]["Size"] = values[83]
+                  values[83] = values[24]
+                  values[82]["BackgroundColor3"] = values[83]
+                  values[83] = 0
+                  values[82]["BorderSizePixel"] = values[83]
+                  values[83] = "GET FREE KEY"
+                  values[82]["Text"] = values[83]
+                  values[84] = environment.Color3
+                  values[83] = values[84]["fromRGB"]
+                  values[84] = 10
+                  values[85] = 10
+                  values[86] = 10
+                  values[83] = values[83](unpackValues(values, 84, 86))
+                  values[82]["TextColor3"] = values[83]
+                  values[103] = 411674.0
+                  values[85] = environment.Enum
+                  values[84] = values[85]["Font"]
+                  values[83] = values[84]["GothamBold"]
+                  values[82]["Font"] = values[83]
+                  values[83] = 11
+                  values[82]["TextSize"] = values[83]
+                  values[83] = false
+                  values[82]["AutoButtonColor"] = values[83]
+                  values[83] = values[79]
+                  values[82]["Parent"] = values[83]
+                  values[84] = environment.Instance
+                  values[103] = 7309.0
+                  values[83] = values[84]["new"]
+                  values[84] = "UICorner"
+                  values[85] = values[82]
+                  values[83] = values[83](unpackValues(values, 84, 85))
+                  values[85] = environment.UDim
+                  values[84] = values[85]["new"]
+                  values[85] = 0
+                  values[86] = 12
+                  values[103] = 634896.0
+                  values[84] = values[84](unpackValues(values, 85, 86))
+                  values[83]["CornerRadius"] = values[84]
+                  values[83] = values[81]
+                  values[84] = values[82]
+                  values[83](unpackValues(values, 84, 84))
+                  values[84] = environment.Instance
+                  values[83] = values[84]["new"]
+                  values[84] = "TextButton"
+                  values[83] = values[83](unpackValues(values, 84, 84))
+                  values[103] = 535003.0
+                  values[85] = environment.UDim2
+                  values[84] = values[85]["new"]
+                  values[85] = 0.5
+                  values[89] = 4
+                  values[86] = -values[89]
+                  values[87] = 1
+                  values[88] = 0
+                  values[84] = values[84](unpackValues(values, 85, 88))
+                  values[83]["Size"] = values[84]
+                  values[85] = environment.Color3
+                  values[84] = values[85]["fromRGB"]
+                  values[85] = 32
+                  values[86] = 32
+                  values[87] = 32
+                  values[84] = values[84](unpackValues(values, 85, 87))
+                  values[103] = 790286.0
+                  values[83]["BackgroundColor3"] = values[84]
+                  values[84] = 0
+                  values[83]["BorderSizePixel"] = values[84]
+                  values[84] = "UNLOCK"
+                  values[83]["Text"] = values[84]
+                  values[84] = values[19]
+                  values[83]["TextColor3"] = values[84]
+                  values[86] = environment.Enum
+                  values[103] = 70703.0
+                  values[85] = values[86]["Font"]
+                  values[84] = values[85]["GothamBold"]
+                  values[83]["Font"] = values[84]
+                  values[84] = 11
+                  values[83]["TextSize"] = values[84]
+                  values[84] = false
+                  values[83]["AutoButtonColor"] = values[84]
+                  values[84] = values[79]
+                  values[83]["Parent"] = values[84]
+                  values[85] = environment.Instance
+                  values[84] = values[85]["new"]
+                  values[103] = 424459.0
+                  values[85] = "UICorner"
+                  values[86] = values[83]
+                  values[84] = values[84](unpackValues(values, 85, 86))
+                  values[86] = environment.UDim
+                  values[85] = values[86]["new"]
+                  values[86] = 0
+                  values[87] = 12
+                  values[85] = values[85](unpackValues(values, 86, 87))
+                  values[103] = 364475.0
+                  values[84]["CornerRadius"] = values[85]
+                  values[85] = environment.Instance
+                  values[84] = values[85]["new"]
+                  values[85] = "UIStroke"
+                  values[86] = values[83]
+                  values[84] = values[84](unpackValues(values, 85, 86))
+                  values[85] = values[25]
+                  values[84]["Color"] = values[85]
+                  values[85] = 1
+                  values[84]["Thickness"] = values[85]
+                  values[87] = environment.Enum
+                  values[103] = 746043.0
+                  values[86] = values[87]["ApplyStrokeMode"]
+                  values[85] = values[86]["Border"]
+                  values[84]["ApplyStrokeMode"] = values[85]
+                  values[85] = values[81]
+                  values[86] = values[83]
+                  values[85](unpackValues(values, 86, 86))
+                  values[86] = environment.Instance
+                  values[85] = values[86]["new"]
+                  values[86] = "Frame"
+                  values[85] = values[85](unpackValues(values, 86, 86))
+                  values[87] = environment.UDim2
+                  values[86] = values[87]["fromOffset"]
+                  values[87] = 28
+                  values[88] = 242 + values[50]
+                  values[86] = values[86](unpackValues(values, 87, 88))
+                  values[103] = 835025.0
+                  values[85]["Position"] = values[86]
+                  values[87] = environment.UDim2
+                  values[86] = values[87]["new"]
+                  values[87] = 1
+                  values[91] = 56
+                  values[88] = -values[91]
+                  values[89] = 0
+                  values[90] = 36
+                  values[86] = values[86](unpackValues(values, 87, 90))
+                  values[103] = 764245.0
+                  values[85]["Size"] = values[86]
+                  values[86] = values[18]
+                  values[85]["BackgroundColor3"] = values[86]
+                  values[86] = 0
+                  values[85]["BorderSizePixel"] = values[86]
+                  values[86] = values[56]
+                  values[85]["Parent"] = values[86]
+                  values[87] = environment.Instance
+                  values[86] = values[87]["new"]
+                  values[87] = "UICorner"
+                  values[88] = values[85]
+                  values[86] = values[86](unpackValues(values, 87, 88))
+                  values[88] = environment.UDim
+                  values[87] = values[88]["new"]
+                  values[88] = 0
+                  values[89] = 10
+                  values[103] = 112835.0
+                  values[87] = values[87](unpackValues(values, 88, 89))
+                  values[86]["CornerRadius"] = values[87]
+                  values[87] = environment.Instance
+                  values[86] = values[87]["new"]
+                  values[87] = "UIStroke"
+                  values[88] = values[85]
+                  values[86] = values[86](unpackValues(values, 87, 88))
+                  values[87] = values[25]
+                  values[86]["Color"] = values[87]
+                  values[87] = 1
+                  values[103] = 423649.0
+                  values[86]["Thickness"] = values[87]
+                  values[89] = environment.Enum
+                  values[88] = values[89]["ApplyStrokeMode"]
+                  values[87] = values[88]["Border"]
+                  values[86]["ApplyStrokeMode"] = values[87]
+                  values[88] = environment.Instance
+                  values[87] = values[88]["new"]
+                  values[88] = "Frame"
+                  values[87] = values[87](unpackValues(values, 88, 88))
+                  values[103] = 177560.0
+                  values[89] = environment.UDim2
+                  values[88] = values[89]["fromOffset"]
+                  values[89] = 6
+                  values[90] = 6
+                  values[88] = values[88](unpackValues(values, 89, 90))
+                  values[87]["Size"] = values[88]
+                  values[89] = environment.UDim2
+                  values[88] = values[89]["fromOffset"]
+                  values[89] = 14
+                  values[90] = 15
+                  values[88] = values[88](unpackValues(values, 89, 90))
+                  values[87]["Position"] = values[88]
+                  values[88] = values[21]
+                  values[87]["BackgroundColor3"] = values[88]
+                  values[88] = 0
+                  values[103] = 779825.0
+                  values[87]["BorderSizePixel"] = values[88]
+                  values[88] = values[85]
+                  values[87]["Parent"] = values[88]
+                  values[89] = environment.Instance
+                  values[88] = values[89]["new"]
+                  values[89] = "UICorner"
+                  values[90] = values[87]
+                  values[88] = values[88](unpackValues(values, 89, 90))
+                  values[90] = environment.UDim
+                  values[89] = values[90]["new"]
+                  values[90] = 1
+                  values[91] = 0
+                  values[89] = values[89](unpackValues(values, 90, 91))
+                  values[88]["CornerRadius"] = values[89]
+                  values[89] = environment.Instance
+                  values[103] = 1046794.0
+                  values[88] = values[89]["new"]
+                  values[89] = "TextLabel"
+                  values[88] = values[88](unpackValues(values, 89, 89))
+                  values[89] = 1
+                  values[88]["BackgroundTransparency"] = values[89]
+                  values[90] = environment.UDim2
+                  values[89] = values[90]["fromOffset"]
+                  values[90] = 28
+                  values[91] = 0
+                  values[89] = values[89](unpackValues(values, 90, 91))
+                  values[88]["Position"] = values[89]
+                  values[103] = 82684.0
+                  values[90] = environment.UDim2
+                  values[89] = values[90]["new"]
+                  values[90] = 1
+                  values[94] = 40
+                  values[91] = -values[94]
+                  values[92] = 1
+                  values[93] = 0
+                  values[89] = values[89](unpackValues(values, 90, 93))
+                  values[103] = 357277.0
+                  values[88]["Size"] = values[89]
+                  values[91] = environment.Enum
+                  values[90] = values[91]["Font"]
+                  values[89] = values[90]["Code"]
+                  values[88]["Font"] = values[89]
+                  values[89] = "No active key"
+                  values[88]["Text"] = values[89]
+                  values[89] = values[21]
+                  values[88]["TextColor3"] = values[89]
+                  values[89] = 12
+                  values[88]["TextSize"] = values[89]
+                  values[91] = environment.Enum
+                  values[90] = values[91]["TextXAlignment"]
+                  values[89] = values[90]["Left"]
+                  values[88]["TextXAlignment"] = values[89]
+                  values[89] = values[85]
+                  values[103] = 620493.0
+                  values[88]["Parent"] = values[89]
+                  values[90] = environment.Instance
+                  values[89] = values[90]["new"]
+                  values[90] = "TextLabel"
+                  values[89] = values[89](unpackValues(values, 90, 90))
+                  values[90] = 1
+                  values[89]["BackgroundTransparency"] = values[90]
+                  values[91] = environment.UDim2
+                  values[90] = values[91]["new"]
+                  values[91] = 0
+                  values[103] = 508057.0
+                  values[92] = 28
+                  values[93] = 1
+                  values[95] = 46
+                  values[94] = -values[95]
+                  values[90] = values[90](unpackValues(values, 91, 94))
+                  values[89]["Position"] = values[90]
+                  values[91] = environment.UDim2
+                  values[90] = values[91]["new"]
+                  values[103] = 247217.0
+                  values[91] = 1
+                  values[95] = 56
+                  values[92] = -values[95]
+                  values[93] = 0
+                  values[94] = 18
+                  values[90] = values[90](unpackValues(values, 91, 94))
+                  values[89]["Size"] = values[90]
+                  values[92] = environment.Enum
+                  values[91] = values[92]["Font"]
+                  values[90] = values[91]["GothamMedium"]
+                  values[89]["Font"] = values[90]
+                  values[103] = 802171.0
+                  values[90] = values[49]
+                  if not values[90] then
+                  else
+                    values[103] = 802171.0
+                    values[90] = "Keys are shared"
+                  end
+                  values[103] = 26759.0
+                  if values[90] then
+                  else
+                    values[103] = 26759.0
+                    values[90] = "Open Violence District to unlock"
+                  end
+                  values[103] = 508575.0
+                  values[89]["Text"] = values[90]
+                  values[90] = values[20]
+                  values[89]["TextColor3"] = values[90]
+                  values[90] = 10
+                  values[89]["TextSize"] = values[90]
+                  values[92] = environment.Enum
+                  values[91] = values[92]["TextXAlignment"]
+                  values[90] = values[91]["Center"]
+                  values[89]["TextXAlignment"] = values[90]
+                  values[90] = values[56]
+                  values[89]["Parent"] = values[90]
+                  values[91] = environment.Instance
+                  values[90] = values[91]["new"]
+                  values[91] = "TextLabel"
+                  values[90] = values[90](unpackValues(values, 91, 91))
+                  values[103] = 60040.0
+                  values[91] = 1
+                  values[90]["BackgroundTransparency"] = values[91]
+                  values[92] = environment.UDim2
+                  values[91] = values[92]["new"]
+                  values[92] = 0
+                  values[93] = 28
+                  values[94] = 1
+                  values[96] = 24
+                  values[95] = -values[96]
+                  values[103] = 577688.0
+                  values[91] = values[91](unpackValues(values, 92, 95))
+                  values[90]["Position"] = values[91]
+                  values[92] = environment.UDim2
+                  values[91] = values[92]["new"]
+                  values[92] = 1
+                  values[96] = 56
+                  values[93] = -values[96]
+                  values[94] = 0
+                  values[103] = 973419.0
+                  values[95] = 16
+                  values[91] = values[91](unpackValues(values, 92, 95))
+                  values[90]["Size"] = values[91]
+                  values[93] = environment.Enum
+                  values[92] = values[93]["Font"]
+                  values[91] = values[92]["Code"]
+                  values[90]["Font"] = values[91]
+                  values[91] = "KINON HUB"
+                  values[90]["Text"] = values[91]
+                  values[91] = values[21]
+                  values[90]["TextColor3"] = values[91]
+                  values[91] = 9
+                  values[90]["TextSize"] = values[91]
+                  values[103] = 156679.0
+                  values[93] = environment.Enum
+                  values[92] = values[93]["TextXAlignment"]
+                  values[91] = values[92]["Center"]
+                  values[90]["TextXAlignment"] = values[91]
+                  values[91] = values[56]
+                  values[90]["Parent"] = values[91]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 2}
+                    cells[1] = {values, 59}
+                    cells[2] = {values, 55}
+                    cells[3] = {values, 53}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[91] = function(...) return functions["callback_62"](captured, ...) end
+                  end
+                  do
+                    local cells = {}
+                    cells[0] = {values, 29}
+                    cells[1] = {values, 78}
+                    cells[2] = {values, 27}
+                    cells[3] = {values, 33}
+                    cells[4] = {values, 38}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[92] = function(...) return functions["callback_64"](captured, ...) end
+                  end
+                  values[93] = environment.pcall
+                  do
+                    local cells = {}
+                    cells[0] = {values, 92}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[94] = function(...) return functions["callback_65"](captured, ...) end
+                  end
+                  values[93](unpackValues(values, 94, 94))
+                  values[93] = environment.pcall
+                  values[103] = 365507.0
+                  do
+                    local cells = {}
+                    cells[0] = {values, 5}
+                    cells[1] = {values, 92}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[94] = function(...) return functions["callback_67"](captured, ...) end
+                  end
+                  values[93](unpackValues(values, 94, 94))
+                  do
+                    local cells = {}
+                    cells[0] = {values, 89}
+                    cells[1] = {values, 22}
+                    cells[2] = {values, 23}
+                    cells[3] = {values, 20}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[93] = function(...) return functions["callback_69"](captured, ...) end
+                  end
+                  do
+                    local cells = {}
+                    cells[0] = {values, 39}
+                    cells[1] = {values, 88}
+                    cells[2] = {values, 31}
+                    cells[3] = {values, 22}
+                    cells[4] = {values, 87}
+                    cells[5] = {values, 36}
+                    cells[6] = {values, 30}
+                    cells[7] = {values, 21}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[94] = function(...) return functions["callback_70"](captured, ...) end
+                  end
+                  do
+                    local cells = {}
+                    cells[0] = {values, 42}
+                    cells[1] = {values, 43}
+                    cells[2] = {values, 39}
+                    cells[3] = {values, 82}
+                    cells[4] = {values, 31}
+                    cells[5] = {values, 21}
+                    cells[6] = {values, 24}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[95] = function(...) return functions["callback_71"](captured, ...) end
+                  end
+                  values[97] = environment.task
+                  values[96] = values[97]["spawn"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 53}
+                    cells[1] = {values, 94}
+                    cells[2] = {values, 95}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[97] = function(...) return functions["callback_72"](captured, ...) end
+                  end
+                  values[96](unpackValues(values, 97, 97))
+                  values[96] = false
+                  do
+                    local cells = {}
+                    cells[0] = {values, 96}
+                    cells[1] = {values, 38}
+                    cells[2] = {values, 83}
+                    cells[3] = {values, 22}
+                    cells[4] = {values, 2}
+                    cells[5] = {values, 84}
+                    cells[6] = {values, 93}
+                    cells[7] = {values, 34}
+                    cells[8] = {values, 94}
+                    cells[9] = {values, 32}
+                    cells[10] = {values, 19}
+                    cells[11] = {values, 25}
+                    cells[12] = {values, 8}
+                    cells[13] = {values, 91}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[97] = function(...) return functions["callback_73"](captured, ...) end
+                  end
+                  values[98] = false
+                  values[103] = 193014.0
+                  values[100] = values[82]["MouseButton1Click"]
+                  values[100] = values[100]
+                  values[99] = values[100]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 98}
+                    cells[1] = {values, 43}
+                    cells[2] = {values, 34}
+                    cells[3] = {values, 42}
+                    cells[4] = {values, 82}
+                    cells[5] = {values, 33}
+                    cells[6] = {values, 27}
+                    cells[7] = {values, 78}
+                    cells[8] = {values, 41}
+                    cells[9] = {values, 38}
+                    cells[10] = {values, 93}
+                    cells[11] = {values, 95}
+                    cells[12] = {values, 94}
+                    cells[13] = {values, 97}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[101] = function(...) return functions["callback_76"](captured, ...) end
+                  end
+                  values[99](unpackValues(values, 100, 101))
+                  values[100] = values[83]["MouseButton1Click"]
+                  values[100] = values[100]
+                  values[99] = values[100]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 98}
+                    cells[1] = {values, 83}
+                    cells[2] = {values, 93}
+                    cells[3] = {values, 37}
+                    cells[4] = {values, 29}
+                    cells[5] = {values, 78}
+                    cells[6] = {values, 39}
+                    cells[7] = {values, 97}
+                    cells[8] = {values, 27}
+                    cells[9] = {values, 33}
+                    cells[10] = {values, 38}
+                    cells[11] = {values, 34}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[101] = function(...) return functions["callback_78"](captured, ...) end
+                  end
+                  values[99](unpackValues(values, 100, 101))
+                  values[100] = values[72]["MouseButton1Click"]
+                  values[103] = 446243.0
+                  values[100] = values[100]
+                  values[99] = values[100]["Connect"]
+                  do
+                    local cells = {}
+                    cells[0] = {values, 92}
+                    cells[1] = {values, 91}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[101] = function(...) return functions["callback_80"](captured, ...) end
+                  end
+                  values[99](unpackValues(values, 100, 101))
+                  closeCapturedValues(captureGroups, values, 0)
+                  return
+                else
+                  values[103] = 118623
+                  values[48] = values[34]
+                  values[49] = "KINON HUB"
+                  values[52] = "Key active - expires in "
+                  values[53] = values[31]
+                  values[54] = values[47]
+                  values[53] = values[53](unpackValues(values, 54, 54))
+                  local joined = values[53]
+                  for index = 52, 52, -1 do joined = values[index] .. joined end
+                  values[50] = joined
+                  values[103] = 796219
+                  values[51] = 5
+                  values[48](unpackValues(values, 49, 51))
+                  values[48] = environment.pcall
+                  do
+                    local cells = {}
+                    cells[0] = {values, 8}
+                    local captured = setmetatable({}, captureMetatable)
+                    rawset(captured, false, cells)
+                    captureGroups[#captureGroups + 1] = cells
+                    values[49] = function(...) return functions["callback_39"](captured, ...) end
+                  end
+                  values[48] = values[48](unpackValues(values, 49, 49))
+                  values[49] = values[48]
+                  if not values[49] then
+                    values[103] = 165982
+                    values[49] = values[34]
+                    values[50] = "KINON HUB"
+                    values[51] = "Hub load failed - panel reopened"
+                    values[52] = 5
+                    values[49](unpackValues(values, 50, 52))
+                    values[103] = 382112
+                    do
+                      local cells = {}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[44] = function(...) return functions["extractAssetId"](captured, ...) end
+                    end
+                    do
+                      local cells = {}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[45] = function(...) return functions["callback_41"](captured, ...) end
+                    end
+                    do
+                      local cells = {}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[46] = function(...) return functions["callback_43"](captured, ...) end
+                    end
+                    do
+                      local cells = {}
+                      cells[0] = {values, 26}
+                      cells[1] = {values, 44}
+                      cells[2] = {values, 45}
+                      cells[3] = {values, 46}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[47] = function(...) return functions["callback_47"](captured, ...) end
+                    end
+                    for index = 48, 48 do values[index] = nil end
+                    values[49] = environment.pcall
+                    do
+                      local cells = {}
+                      cells[0] = {values, 48}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[50] = function(...) return functions["callback_49"](captured, ...) end
+                    end
+                    values[49](unpackValues(values, 50, 50))
+                    values[49] = values[48]
+                    if values[49] then
+                    else
+                      values[103] = 382112
+                      values[50] = values[5]
+                      values[49] = values[50]["WaitForChild"]
+                      values[103] = 837070
+                      values[51] = "PlayerGui"
+                      values[49] = values[49](unpackValues(values, 50, 51))
+                    end
+                    values[103] = 499121
+                    values[48] = values[49]
+                    values[49] = environment.ipairs
+                    values[50] = {}
+                    values[51] = values[48]
+                    values[53] = values[5]
+                    values[52] = values[53]["WaitForChild"]
+                    values[54] = "PlayerGui"
+                    local results = packValues(values[52](unpackValues(values, 53, 54)))
+                    registerTop = 52 + results.n - 1
+                    for index = 52, registerTop do values[index] = results[index - 52 + 1] end
+                    for index = 1, registerTop - 50 do values[50][0 + index] = values[50 + index] end
+                    values[49], values[50], values[51] = values[49](unpackValues(values, 50, 50))
+                    values[103] = 499121.0
+                    if type(values[49]) ~= "function" then
+                      local source = values[49]
+                      if type(source) == "table" and getmetatable(source) == nil then
+                        values[49], values[50], values[51] = next, source, nil
+                      else
+                        values[49] = coroutine.wrap(function() for key, value in source do coroutine.yield(key, value) end end)
+                        values[50], values[51] = nil, nil
+                      end
+                    end
+                    do
+                      local leaveLoop277 = 0
+                      while true do
+                        values[103] = 441130.0
+                        local results = packValues(values[49](values[50], values[51]))
+                        for index = 1, 2 do values[51 + index] = results[index] end
+                        if values[52] ~= nil then
+                          values[51] = values[52]
+                          do
+                            local leaveLoop279 = 0
+                            while true do
+                              values[103] = 973365.0
+                              values[55] = values[53]
+                              values[54] = values[55]["FindFirstChild"]
+                              values[56] = "KinonKeySystem"
+                              values[54] = values[54](unpackValues(values, 55, 56))
+                              values[55] = values[54]
+                              if not values[55] then
+                                leaveLoop279 = 277
+                                break
+                              else
+                                values[103] = 973365.0
+                                values[56] = values[54]
+                                values[55] = values[56]["Destroy"]
+                                values[55](unpackValues(values, 56, 56))
+                                local results = packValues(values[49](values[50], values[51]))
+                                for index = 1, 2 do values[51 + index] = results[index] end
+                                if values[52] ~= nil then
+                                  values[51] = values[52]
+                                  continue
+                                end
+                              end
+                              leaveLoop279 = 280
+                              break
+                            end
+                            if leaveLoop279 == 277 then
+                              continue
+                            elseif leaveLoop279 == 280 then
+                            end
+                          end
+                        end
+                        leaveLoop277 = 280
+                        break
+                      end
+                    end
+                    values[103] = 267653.0
+                    values[49] = values[32]
+                    values[49] = values[49](unpackValues(values, 50, 49))
+                    values[50] = values[49]
+                    if not values[50] then
+                    else
+                      values[103] = 267653.0
+                      values[50] = 0
+                    end
+                    values[103] = 2062.0
+                    if values[50] then
+                    else
+                      values[103] = 2062.0
+                      values[50] = 46
+                    end
+                    values[103] = 871382.0
+                    values[51] = 400
+                    values[52] = 330 + values[50]
+                    values[54] = environment.Instance
+                    values[53] = values[54]["new"]
+                    values[54] = "ScreenGui"
+                    values[53] = values[53](unpackValues(values, 54, 54))
+                    values[54] = "KinonKeySystem"
+                    values[53]["Name"] = values[54]
+                    values[54] = false
+                    values[53]["ResetOnSpawn"] = values[54]
+                    values[54] = true
+                    values[53]["IgnoreGuiInset"] = values[54]
+                    values[54] = 10000
+                    values[53]["DisplayOrder"] = values[54]
+                    values[54] = environment.pcall
+                    do
+                      local cells = {}
+                      cells[0] = {values, 53}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[55] = function(...) return functions["callback_50"](captured, ...) end
+                    end
+                    values[103] = 437287.0
+                    values[54](unpackValues(values, 55, 55))
+                    values[54] = values[48]
+                    values[53]["Parent"] = values[54]
+                    values[54] = {}
+                    values[56] = values[53]["Destroying"]
+                    values[56] = values[56]
+                    values[55] = values[56]["Connect"]
+                    do
+                      local cells = {}
+                      cells[0] = {values, 54}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[57] = function(...) return functions["callback_51"](captured, ...) end
+                    end
+                    values[55](unpackValues(values, 56, 57))
+                    values[103] = 766321.0
+                    values[56] = environment.Instance
+                    values[55] = values[56]["new"]
+                    values[56] = "Frame"
+                    values[55] = values[55](unpackValues(values, 56, 56))
+                    values[57] = environment.UDim2
+                    values[56] = values[57]["fromScale"]
+                    values[57] = 1
+                    values[58] = 1
+                    values[56] = values[56](unpackValues(values, 57, 58))
+                    values[103] = 837025.0
+                    values[55]["Size"] = values[56]
+                    values[57] = environment.Color3
+                    values[56] = values[57]["new"]
+                    values[57] = 0
+                    values[58] = 0
+                    values[59] = 0
+                    values[56] = values[56](unpackValues(values, 57, 59))
+                    values[55]["BackgroundColor3"] = values[56]
+                    values[56] = 1
+                    values[55]["BackgroundTransparency"] = values[56]
+                    values[56] = 0
+                    values[103] = 96878.0
+                    values[55]["BorderSizePixel"] = values[56]
+                    values[56] = true
+                    values[55]["Active"] = values[56]
+                    values[56] = values[53]
+                    values[55]["Parent"] = values[56]
+                    values[58] = values[2]
+                    values[57] = values[58]["Create"]
+                    values[59] = values[55]
+                    values[62] = environment.TweenInfo
+                    values[60] = values[62]["new"]
+                    values[61] = 0.3
+                    values[64] = environment.Enum
+                    values[103] = 424114.0
+                    values[63] = values[64]["EasingStyle"]
+                    values[62] = values[63]["Quad"]
+                    values[60] = values[60](unpackValues(values, 61, 62))
+                    values[61] = {}
+                    values[62] = 0.5
+                    values[61]["BackgroundTransparency"] = values[62]
+                    values[57] = values[57](unpackValues(values, 58, 61))
+                    values[57] = values[57]
+                    values[56] = values[57]["Play"]
+                    values[56](unpackValues(values, 57, 57))
+                    values[57] = environment.Instance
+                    values[56] = values[57]["new"]
+                    values[57] = "Frame"
+                    values[56] = values[56](unpackValues(values, 57, 57))
+                    values[57] = "KeyPanel"
+                    values[56]["Name"] = values[57]
+                    values[103] = 823574.0
+                    values[58] = environment.Vector2
+                    values[57] = values[58]["new"]
+                    values[58] = 0.5
+                    values[59] = 0.5
+                    values[57] = values[57](unpackValues(values, 58, 59))
+                    values[56]["AnchorPoint"] = values[57]
+                    values[58] = environment.UDim2
+                    values[57] = values[58]["fromScale"]
+                    values[58] = 0.5
+                    values[59] = 0.5
+                    values[57] = values[57](unpackValues(values, 58, 59))
+                    values[56]["Position"] = values[57]
+                    values[58] = environment.UDim2
+                    values[103] = 549479.0
+                    values[57] = values[58]["fromOffset"]
+                    values[58] = values[51]
+                    values[59] = values[52]
+                    values[57] = values[57](unpackValues(values, 58, 59))
+                    values[56]["Size"] = values[57]
+                    values[57] = values[16]
+                    values[56]["BackgroundColor3"] = values[57]
+                    values[57] = 0
+                    values[56]["BorderSizePixel"] = values[57]
+                    values[57] = true
+                    values[103] = 139371.0
+                    values[56]["ClipsDescendants"] = values[57]
+                    values[57] = values[55]
+                    values[56]["Parent"] = values[57]
+                    values[58] = environment.Instance
+                    values[57] = values[58]["new"]
+                    values[58] = "UICorner"
+                    values[59] = values[56]
+                    values[57] = values[57](unpackValues(values, 58, 59))
+                    values[59] = environment.UDim
+                    values[58] = values[59]["new"]
+                    values[59] = 0
+                    values[60] = 22
+                    values[103] = 812291.0
+                    values[58] = values[58](unpackValues(values, 59, 60))
+                    values[57]["CornerRadius"] = values[58]
+                    values[58] = environment.Instance
+                    values[57] = values[58]["new"]
+                    values[58] = "UIGradient"
+                    values[59] = values[56]
+                    values[57] = values[57](unpackValues(values, 58, 59))
+                    values[59] = environment.ColorSequence
+                    values[103] = 443664.0
+                    values[58] = values[59]["new"]
+                    values[59] = {}
+                    values[61] = environment.ColorSequenceKeypoint
+                    values[60] = values[61]["new"]
+                    values[61] = 0
+                    values[62] = values[16]
+                    values[60] = values[60](unpackValues(values, 61, 62))
+                    values[62] = environment.ColorSequenceKeypoint
+                    values[61] = values[62]["new"]
+                    values[62] = 1
+                    values[63] = values[15]
+                    values[103] = 482337.0
+                    local results = packValues(values[61](unpackValues(values, 62, 63)))
+                    registerTop = 61 + results.n - 1
+                    for index = 61, registerTop do values[index] = results[index - 61 + 1] end
+                    for index = 1, registerTop - 59 do values[59][0 + index] = values[59 + index] end
+                    values[103] = 482337
+                    values[103] = 482337.0
+                    values[58] = values[58](unpackValues(values, 59, 59))
+                    values[57]["Color"] = values[58]
+                    values[58] = 135
+                    values[57]["Rotation"] = values[58]
+                    values[59] = environment.Instance
+                    values[58] = values[59]["new"]
+                    values[59] = "UIStroke"
+                    values[103] = 675808.0
+                    values[60] = values[56]
+                    values[58] = values[58](unpackValues(values, 59, 60))
+                    values[60] = environment.Color3
+                    values[59] = values[60]["fromRGB"]
+                    values[60] = 60
+                    values[61] = 60
+                    values[62] = 60
+                    values[59] = values[59](unpackValues(values, 60, 62))
+                    values[58]["Color"] = values[59]
+                    values[59] = 1
+                    values[58]["Thickness"] = values[59]
+                    values[61] = environment.Enum
+                    values[60] = values[61]["ApplyStrokeMode"]
+                    values[103] = 695177.0
+                    values[59] = values[60]["Border"]
+                    values[58]["ApplyStrokeMode"] = values[59]
+                    values[60] = environment.Instance
+                    values[59] = values[60]["new"]
+                    values[60] = "UIScale"
+                    values[61] = values[56]
+                    values[59] = values[59](unpackValues(values, 60, 61))
+                    values[60] = 0.7
+                    values[59]["Scale"] = values[60]
+                    values[60] = 1
+                    values[62] = environment.workspace
+                    values[61] = values[62]["CurrentCamera"]
+                    do
+                      local cells = {}
+                      cells[0] = {values, 61}
+                      cells[1] = {values, 51}
+                      cells[2] = {values, 52}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[62] = function(...) return functions["callback_53"](captured, ...) end
+                    end
+                    values[63] = values[62]
+                    values[103] = 892242.0
+                    values[63] = values[63](unpackValues(values, 64, 63))
+                    values[60] = values[63]
+                    values[65] = values[2]
+                    values[64] = values[65]["Create"]
+                    values[66] = values[59]
+                    values[69] = environment.TweenInfo
+                    values[67] = values[69]["new"]
+                    values[68] = 0.35
+                    values[72] = environment.Enum
+                    values[71] = values[72]["EasingStyle"]
+                    values[69] = values[71]["Back"]
+                    values[72] = environment.Enum
+                    values[71] = values[72]["EasingDirection"]
+                    values[70] = values[71]["Out"]
+                    values[67] = values[67](unpackValues(values, 68, 70))
+                    values[68] = {}
+                    values[103] = 28910.0
+                    values[69] = values[60]
+                    values[68]["Scale"] = values[69]
+                    values[64] = values[64](unpackValues(values, 65, 68))
+                    values[64] = values[64]
+                    values[63] = values[64]["Play"]
+                    values[63](unpackValues(values, 64, 64))
+                    values[63] = values[61]
+                    if not values[63] then
+                    else
+                      values[103] = 28910.0
+                      values[65] = values[54]
+                      values[64] = #values[65]
+                      values[63] = values[64] + 1
+                      values[66] = values[61]
+                      values[65] = values[66]["GetPropertyChangedSignal"]
+                      values[67] = "ViewportSize"
+                      values[65] = values[65](unpackValues(values, 66, 67))
+                      values[65] = values[65]
+                      values[64] = values[65]["Connect"]
+                      do
+                        local cells = {}
+                        cells[0] = {values, 62}
+                        cells[1] = {values, 60}
+                        cells[2] = {values, 59}
+                        local captured = setmetatable({}, captureMetatable)
+                        rawset(captured, false, cells)
+                        captureGroups[#captureGroups + 1] = cells
+                        values[66] = function(...) return functions["callback_54"](captured, ...) end
+                      end
+                      values[64] = values[64](unpackValues(values, 65, 66))
+                      values[103] = 12396.0
+                      values[54][values[63]] = values[64]
+                    end
+                    values[103] = 758159.0
+                    values[64] = environment.Instance
+                    values[63] = values[64]["new"]
+                    values[64] = "Frame"
+                    values[63] = values[63](unpackValues(values, 64, 64))
+                    values[65] = environment.UDim2
+                    values[64] = values[65]["new"]
+                    values[65] = 1
+                    values[69] = 112
+                    values[66] = -values[69]
+                    values[67] = 0
+                    values[68] = 58
+                    values[64] = values[64](unpackValues(values, 65, 68))
+                    values[63]["Size"] = values[64]
+                    values[103] = 393573.0
+                    values[65] = environment.UDim2
+                    values[64] = values[65]["fromOffset"]
+                    values[65] = 28
+                    values[66] = 22
+                    values[64] = values[64](unpackValues(values, 65, 66))
+                    values[63]["Position"] = values[64]
+                    values[64] = 1
+                    values[63]["BackgroundTransparency"] = values[64]
+                    values[64] = true
+                    values[63]["Active"] = values[64]
+                    values[64] = values[56]
+                    values[63]["Parent"] = values[64]
+                    values[103] = 1032141.0
+                    values[65] = environment.Instance
+                    values[64] = values[65]["new"]
+                    values[65] = "Frame"
+                    values[64] = values[64](unpackValues(values, 65, 65))
+                    values[66] = environment.UDim2
+                    values[65] = values[66]["fromOffset"]
+                    values[66] = 42
+                    values[67] = 42
+                    values[65] = values[65](unpackValues(values, 66, 67))
+                    values[64]["Size"] = values[65]
+                    values[66] = environment.UDim2
+                    values[65] = values[66]["fromOffset"]
+                    values[66] = 0
+                    values[67] = 8
+                    values[65] = values[65](unpackValues(values, 66, 67))
+                    values[103] = 160318.0
+                    values[64]["Position"] = values[65]
+                    values[66] = environment.Color3
+                    values[65] = values[66]["fromRGB"]
+                    values[66] = 32
+                    values[67] = 32
+                    values[68] = 32
+                    values[65] = values[65](unpackValues(values, 66, 68))
+                    values[64]["BackgroundColor3"] = values[65]
+                    values[103] = 914429.0
+                    values[65] = 0
+                    values[64]["BorderSizePixel"] = values[65]
+                    values[65] = values[63]
+                    values[64]["Parent"] = values[65]
+                    values[66] = environment.Instance
+                    values[65] = values[66]["new"]
+                    values[66] = "UICorner"
+                    values[67] = values[64]
+                    values[65] = values[65](unpackValues(values, 66, 67))
+                    values[103] = 483470.0
+                    values[67] = environment.UDim
+                    values[66] = values[67]["new"]
+                    values[67] = 0
+                    values[68] = 12
+                    values[66] = values[66](unpackValues(values, 67, 68))
+                    values[65]["CornerRadius"] = values[66]
+                    values[66] = environment.Instance
+                    values[65] = values[66]["new"]
+                    values[66] = "UIStroke"
+                    values[67] = values[64]
+                    values[65] = values[65](unpackValues(values, 66, 67))
+                    values[67] = environment.Color3
+                    values[66] = values[67]["fromRGB"]
+                    values[67] = 60
+                    values[68] = 60
+                    values[69] = 60
+                    values[103] = 576667.0
+                    values[66] = values[66](unpackValues(values, 67, 69))
+                    values[65]["Color"] = values[66]
+                    values[66] = 1
+                    values[65]["Thickness"] = values[66]
+                    values[68] = environment.Enum
+                    values[67] = values[68]["ApplyStrokeMode"]
+                    values[66] = values[67]["Border"]
+                    values[65]["ApplyStrokeMode"] = values[66]
+                    values[67] = environment.Instance
+                    values[66] = values[67]["new"]
+                    values[67] = "ImageLabel"
+                    values[66] = values[66](unpackValues(values, 67, 67))
+                    values[68] = environment.UDim2
+                    values[67] = values[68]["fromScale"]
+                    values[103] = 695246.0
+                    values[68] = 1
+                    values[69] = 1
+                    values[67] = values[67](unpackValues(values, 68, 69))
+                    values[66]["Size"] = values[67]
+                    values[67] = 1
+                    values[66]["BackgroundTransparency"] = values[67]
+                    values[69] = environment.Enum
+                    values[68] = values[69]["ScaleType"]
+                    values[67] = values[68]["Crop"]
+                    values[66]["ScaleType"] = values[67]
+                    values[67] = ""
+                    values[66]["Image"] = values[67]
+                    values[103] = 124917.0
+                    values[67] = values[64]
+                    values[66]["Parent"] = values[67]
+                    values[68] = environment.Instance
+                    values[67] = values[68]["new"]
+                    values[68] = "UICorner"
+                    values[69] = values[66]
+                    values[67] = values[67](unpackValues(values, 68, 69))
+                    values[69] = environment.UDim
+                    values[68] = values[69]["new"]
+                    values[69] = 0
+                    values[70] = 12
+                    values[68] = values[68](unpackValues(values, 69, 70))
+                    values[67]["CornerRadius"] = values[68]
+                    values[68] = environment.Instance
+                    values[67] = values[68]["new"]
+                    values[103] = 639358.0
+                    values[68] = "TextLabel"
+                    values[67] = values[67](unpackValues(values, 68, 68))
+                    values[69] = environment.UDim2
+                    values[68] = values[69]["fromScale"]
+                    values[69] = 1
+                    values[70] = 1
+                    values[68] = values[68](unpackValues(values, 69, 70))
+                    values[67]["Size"] = values[68]
+                    values[68] = 1
+                    values[67]["BackgroundTransparency"] = values[68]
+                    values[70] = environment.Enum
+                    values[69] = values[70]["Font"]
+                    values[68] = values[69]["GothamBold"]
+                    values[67]["Font"] = values[68]
+                    values[68] = "K"
+                    values[67]["Text"] = values[68]
+                    values[103] = 688121.0
+                    values[68] = values[24]
+                    values[67]["TextColor3"] = values[68]
+                    values[68] = 20
+                    values[67]["TextSize"] = values[68]
+                    values[68] = false
+                    values[67]["Visible"] = values[68]
+                    values[68] = values[64]
+                    values[67]["Parent"] = values[68]
+                    values[68] = values[47]
+                    values[69] = values[66]
+                    values[103] = 956678.0
+                    values[70] = values[67]
+                    values[68](unpackValues(values, 69, 70))
+                    values[69] = environment.Instance
+                    values[68] = values[69]["new"]
+                    values[69] = "TextLabel"
+                    values[68] = values[68](unpackValues(values, 69, 69))
+                    values[69] = 1
+                    values[68]["BackgroundTransparency"] = values[69]
+                    values[70] = environment.UDim2
+                    values[69] = values[70]["fromOffset"]
+                    values[70] = 56
+                    values[103] = 124047.0
+                    values[71] = 8
+                    values[69] = values[69](unpackValues(values, 70, 71))
+                    values[68]["Position"] = values[69]
+                    values[70] = environment.UDim2
+                    values[69] = values[70]["new"]
+                    values[70] = 1
+                    values[74] = 56
+                    values[71] = -values[74]
+                    values[72] = 0
+                    values[73] = 26
+                    values[103] = 628392.0
+                    values[69] = values[69](unpackValues(values, 70, 73))
+                    values[68]["Size"] = values[69]
+                    values[71] = environment.Enum
+                    values[70] = values[71]["Font"]
+                    values[69] = values[70]["GothamBold"]
+                    values[68]["Font"] = values[69]
+                    values[69] = "KINON HUB"
+                    values[68]["Text"] = values[69]
+                    values[69] = values[24]
+                    values[68]["TextColor3"] = values[69]
+                    values[69] = 20
+                    values[68]["TextSize"] = values[69]
+                    values[71] = environment.Enum
+                    values[70] = values[71]["TextXAlignment"]
+                    values[103] = 1019331.0
+                    values[69] = values[70]["Left"]
+                    values[68]["TextXAlignment"] = values[69]
+                    values[69] = values[63]
+                    values[68]["Parent"] = values[69]
+                    values[70] = environment.Instance
+                    values[69] = values[70]["new"]
+                    values[70] = "Frame"
+                    values[69] = values[69](unpackValues(values, 70, 70))
+                    values[71] = environment.UDim2
+                    values[70] = values[71]["fromOffset"]
+                    values[71] = 56
+                    values[72] = 34
+                    values[103] = 111540.0
+                    values[70] = values[70](unpackValues(values, 71, 72))
+                    values[69]["Position"] = values[70]
+                    values[71] = environment.UDim2
+                    values[70] = values[71]["new"]
+                    values[71] = 1
+                    values[75] = 56
+                    values[72] = -values[75]
+                    values[73] = 0
+                    values[74] = 16
+                    values[70] = values[70](unpackValues(values, 71, 74))
+                    values[69]["Size"] = values[70]
+                    values[70] = 1
+                    values[103] = 84186.0
+                    values[69]["BackgroundTransparency"] = values[70]
+                    values[70] = values[63]
+                    values[69]["Parent"] = values[70]
+                    values[71] = environment.Instance
+                    values[70] = values[71]["new"]
+                    values[71] = "Frame"
+                    values[70] = values[70](unpackValues(values, 71, 71))
+                    values[72] = environment.UDim2
+                    values[71] = values[72]["fromOffset"]
+                    values[72] = 6
+                    values[73] = 6
+                    values[71] = values[71](unpackValues(values, 72, 73))
+                    values[70]["Size"] = values[71]
+                    values[103] = 994489.0
+                    values[72] = environment.UDim2
+                    values[71] = values[72]["fromOffset"]
+                    values[72] = 0
+                    values[73] = 5
+                    values[71] = values[71](unpackValues(values, 72, 73))
+                    values[70]["Position"] = values[71]
+                    values[71] = values[49]
+                    if not values[71] then
+                    else
+                      values[103] = 994489.0
+                      values[71] = values[22]
+                    end
+                    values[103] = 337007.0
+                    if values[71] then
+                    else
+                      values[103] = 337007.0
+                      values[71] = values[23]
+                    end
+                    values[103] = 475053.0
+                    values[70]["BackgroundColor3"] = values[71]
+                    values[71] = 0
+                    values[70]["BorderSizePixel"] = values[71]
+                    values[71] = values[69]
+                    values[70]["Parent"] = values[71]
+                    values[72] = environment.Instance
+                    values[71] = values[72]["new"]
+                    values[72] = "UICorner"
+                    values[73] = values[70]
+                    values[71] = values[71](unpackValues(values, 72, 73))
+                    values[73] = environment.UDim
+                    values[103] = 584782.0
+                    values[72] = values[73]["new"]
+                    values[73] = 1
+                    values[74] = 0
+                    values[72] = values[72](unpackValues(values, 73, 74))
+                    values[71]["CornerRadius"] = values[72]
+                    values[72] = environment.Instance
+                    values[71] = values[72]["new"]
+                    values[72] = "TextLabel"
+                    values[71] = values[71](unpackValues(values, 72, 72))
+                    values[72] = 1
+                    values[71]["BackgroundTransparency"] = values[72]
+                    values[73] = environment.UDim2
+                    values[72] = values[73]["fromOffset"]
+                    values[73] = 12
+                    values[74] = 0
+                    values[72] = values[72](unpackValues(values, 73, 74))
+                    values[103] = 571129.0
+                    values[71]["Position"] = values[72]
+                    values[73] = environment.UDim2
+                    values[72] = values[73]["new"]
+                    values[73] = 1
+                    values[77] = 12
+                    values[74] = -values[77]
+                    values[75] = 1
+                    values[76] = 0
+                    values[72] = values[72](unpackValues(values, 73, 76))
+                    values[71]["Size"] = values[72]
+                    values[74] = environment.Enum
+                    values[73] = values[74]["Font"]
+                    values[72] = values[73]["GothamMedium"]
+                    values[71]["Font"] = values[72]
+                    values[103] = 780365.0
+                    values[72] = values[49]
+                    if not values[72] then
+                    else
+                      values[103] = 780365.0
+                      values[72] = "Violence District"
+                    end
+                    values[103] = 221109.0
+                    if values[72] then
+                    else
+                      values[103] = 221109.0
+                      values[72] = "Game not supported"
+                    end
+                    values[103] = 855795.0
+                    values[71]["Text"] = values[72]
+                    values[72] = values[49]
+                    if not values[72] then
+                    else
+                      values[103] = 855795.0
+                      values[73] = environment.Color3
+                      values[72] = values[73]["fromRGB"]
+                      values[73] = 175
+                      values[74] = 175
+                      values[75] = 175
+                      values[72] = values[72](unpackValues(values, 73, 75))
+                    end
+                    values[103] = 458695.0
+                    if values[72] then
+                    else
+                      values[103] = 458695.0
+                      values[72] = values[23]
+                    end
+                    values[103] = 642323.0
+                    values[71]["TextColor3"] = values[72]
+                    values[72] = 10
+                    values[71]["TextSize"] = values[72]
+                    values[74] = environment.Enum
+                    values[73] = values[74]["TextXAlignment"]
+                    values[72] = values[73]["Left"]
+                    values[71]["TextXAlignment"] = values[72]
+                    values[72] = values[69]
+                    values[71]["Parent"] = values[72]
+                    values[73] = environment.Instance
+                    values[72] = values[73]["new"]
+                    values[73] = "TextButton"
+                    values[103] = 458093.0
+                    values[72] = values[72](unpackValues(values, 73, 73))
+                    values[74] = environment.UDim2
+                    values[73] = values[74]["fromOffset"]
+                    values[74] = 32
+                    values[75] = 32
+                    values[73] = values[73](unpackValues(values, 74, 75))
+                    values[72]["Size"] = values[73]
+                    values[74] = environment.UDim2
+                    values[73] = values[74]["new"]
+                    values[74] = 1
+                    values[78] = 60
+                    values[75] = -values[78]
+                    values[76] = 0
+                    values[77] = 30
+                    values[73] = values[73](unpackValues(values, 74, 77))
+                    values[103] = 273347.0
+                    values[72]["Position"] = values[73]
+                    values[74] = environment.Color3
+                    values[73] = values[74]["fromRGB"]
+                    values[74] = 32
+                    values[75] = 32
+                    values[76] = 32
+                    values[73] = values[73](unpackValues(values, 74, 76))
+                    values[72]["BackgroundColor3"] = values[73]
+                    values[73] = 0
+                    values[72]["BorderSizePixel"] = values[73]
+                    values[103] = 205453.0
+                    values[73] = "X"
+                    values[72]["Text"] = values[73]
+                    values[74] = environment.Color3
+                    values[73] = values[74]["fromRGB"]
+                    values[74] = 175
+                    values[75] = 175
+                    values[76] = 175
+                    values[73] = values[73](unpackValues(values, 74, 76))
+                    values[72]["TextColor3"] = values[73]
+                    values[75] = environment.Enum
+                    values[103] = 261324.0
+                    values[74] = values[75]["Font"]
+                    values[73] = values[74]["GothamBold"]
+                    values[72]["Font"] = values[73]
+                    values[73] = 14
+                    values[72]["TextSize"] = values[73]
+                    values[73] = false
+                    values[72]["AutoButtonColor"] = values[73]
+                    values[73] = values[56]
+                    values[103] = 719446.0
+                    values[72]["Parent"] = values[73]
+                    values[74] = environment.Instance
+                    values[73] = values[74]["new"]
+                    values[74] = "UICorner"
+                    values[75] = values[72]
+                    values[73] = values[73](unpackValues(values, 74, 75))
+                    values[75] = environment.UDim
+                    values[74] = values[75]["new"]
+                    values[75] = 0
+                    values[76] = 10
+                    values[74] = values[74](unpackValues(values, 75, 76))
+                    values[73]["CornerRadius"] = values[74]
+                    values[74] = environment.Instance
+                    values[73] = values[74]["new"]
+                    values[74] = "UIStroke"
+                    values[103] = 741478.0
+                    values[75] = values[72]
+                    values[73] = values[73](unpackValues(values, 74, 75))
+                    values[74] = values[25]
+                    values[73]["Color"] = values[74]
+                    values[74] = 1
+                    values[73]["Thickness"] = values[74]
+                    values[76] = environment.Enum
+                    values[75] = values[76]["ApplyStrokeMode"]
+                    values[103] = 975727.0
+                    values[74] = values[75]["Border"]
+                    values[73]["ApplyStrokeMode"] = values[74]
+                    values[75] = values[72]["MouseEnter"]
+                    values[75] = values[75]
+                    values[74] = values[75]["Connect"]
+                    do
+                      local cells = {}
+                      cells[0] = {values, 2}
+                      cells[1] = {values, 72}
+                      cells[2] = {values, 24}
+                      cells[3] = {values, 73}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[76] = function(...) return functions["callback_55"](captured, ...) end
+                    end
+                    values[74](unpackValues(values, 75, 76))
+                    values[75] = values[72]["MouseLeave"]
+                    values[75] = values[75]
+                    values[74] = values[75]["Connect"]
+                    do
+                      local cells = {}
+                      cells[0] = {values, 2}
+                      cells[1] = {values, 72}
+                      cells[2] = {values, 73}
+                      cells[3] = {values, 25}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[76] = function(...) return functions["callback_56"](captured, ...) end
+                    end
+                    values[74](unpackValues(values, 75, 76))
+                    values[103] = 521986.0
+                    values[75] = environment.Instance
+                    values[74] = values[75]["new"]
+                    values[75] = "Frame"
+                    values[74] = values[74](unpackValues(values, 75, 75))
+                    values[76] = environment.UDim2
+                    values[75] = values[76]["new"]
+                    values[76] = 1
+                    values[80] = 56
+                    values[103] = 168778.0
+                    values[77] = -values[80]
+                    values[78] = 0
+                    values[79] = 1
+                    values[75] = values[75](unpackValues(values, 76, 79))
+                    values[74]["Size"] = values[75]
+                    values[76] = environment.UDim2
+                    values[75] = values[76]["fromOffset"]
+                    values[76] = 28
+                    values[77] = 94
+                    values[103] = 693642.0
+                    values[75] = values[75](unpackValues(values, 76, 77))
+                    values[74]["Position"] = values[75]
+                    values[75] = values[25]
+                    values[74]["BackgroundColor3"] = values[75]
+                    values[75] = 0
+                    values[74]["BorderSizePixel"] = values[75]
+                    values[75] = values[56]
+                    values[74]["Parent"] = values[75]
+                    values[75] = values[49]
+                    values[103] = 357082.0
+                    if values[75] then
+                    else
+                      values[103] = 357082.0
+                      values[76] = environment.Instance
+                      values[75] = values[76]["new"]
+                      values[76] = "Frame"
+                      values[75] = values[75](unpackValues(values, 76, 76))
+                      values[77] = environment.UDim2
+                      values[76] = values[77]["fromOffset"]
+                      values[77] = 28
+                      values[78] = 106
+                      values[103] = 45111.0
+                      values[76] = values[76](unpackValues(values, 77, 78))
+                      values[75]["Position"] = values[76]
+                      values[77] = environment.UDim2
+                      values[76] = values[77]["new"]
+                      values[77] = 1
+                      values[81] = 56
+                      values[78] = -values[81]
+                      values[79] = 0
+                      values[80] = 34
+                      values[76] = values[76](unpackValues(values, 77, 80))
+                      values[75]["Size"] = values[76]
+                      values[103] = 827933.0
+                      values[77] = environment.Color3
+                      values[76] = values[77]["fromRGB"]
+                      values[77] = 38
+                      values[78] = 16
+                      values[79] = 16
+                      values[76] = values[76](unpackValues(values, 77, 79))
+                      values[75]["BackgroundColor3"] = values[76]
+                      values[76] = 0
+                      values[75]["BorderSizePixel"] = values[76]
+                      values[76] = values[56]
+                      values[75]["Parent"] = values[76]
+                      values[77] = environment.Instance
+                      values[103] = 936000.0
+                      values[76] = values[77]["new"]
+                      values[77] = "UICorner"
+                      values[78] = values[75]
+                      values[76] = values[76](unpackValues(values, 77, 78))
+                      values[78] = environment.UDim
+                      values[77] = values[78]["new"]
+                      values[78] = 0
+                      values[79] = 10
+                      values[77] = values[77](unpackValues(values, 78, 79))
+                      values[76]["CornerRadius"] = values[77]
+                      values[77] = environment.Instance
+                      values[76] = values[77]["new"]
+                      values[77] = "UIStroke"
+                      values[78] = values[75]
+                      values[76] = values[76](unpackValues(values, 77, 78))
+                      values[78] = environment.Color3
+                      values[103] = 712264.0
+                      values[77] = values[78]["fromRGB"]
+                      values[78] = 90
+                      values[79] = 30
+                      values[80] = 30
+                      values[77] = values[77](unpackValues(values, 78, 80))
+                      values[76]["Color"] = values[77]
+                      values[77] = 1
+                      values[76]["Thickness"] = values[77]
+                      values[79] = environment.Enum
+                      values[78] = values[79]["ApplyStrokeMode"]
+                      values[77] = values[78]["Border"]
+                      values[76]["ApplyStrokeMode"] = values[77]
+                      values[78] = environment.Instance
+                      values[77] = values[78]["new"]
+                      values[103] = 813365.0
+                      values[78] = "TextLabel"
+                      values[77] = values[77](unpackValues(values, 78, 78))
+                      values[78] = 1
+                      values[77]["BackgroundTransparency"] = values[78]
+                      values[79] = environment.UDim2
+                      values[78] = values[79]["fromScale"]
+                      values[79] = 1
+                      values[80] = 1
+                      values[103] = 876432.0
+                      values[78] = values[78](unpackValues(values, 79, 80))
+                      values[77]["Size"] = values[78]
+                      values[80] = environment.Enum
+                      values[79] = values[80]["Font"]
+                      values[78] = values[79]["GothamMedium"]
+                      values[77]["Font"] = values[78]
+                      values[78] = "This script only works in Violence District"
+                      values[77]["Text"] = values[78]
+                      values[79] = environment.Color3
+                      values[78] = values[79]["fromRGB"]
+                      values[79] = 255
+                      values[80] = 170
+                      values[81] = 170
+                      values[78] = values[78](unpackValues(values, 79, 81))
+                      values[77]["TextColor3"] = values[78]
+                      values[78] = 11
+                      values[103] = 227656.0
+                      values[77]["TextSize"] = values[78]
+                      values[78] = values[75]
+                      values[77]["Parent"] = values[78]
+                    end
+                    values[103] = 342154.0
+                    values[76] = environment.Instance
+                    values[75] = values[76]["new"]
+                    values[76] = "TextLabel"
+                    values[75] = values[75](unpackValues(values, 76, 76))
+                    values[76] = 1
+                    values[75]["BackgroundTransparency"] = values[76]
+                    values[77] = environment.UDim2
+                    values[76] = values[77]["fromOffset"]
+                    values[77] = 30
+                    values[78] = 108 + values[50]
+                    values[76] = values[76](unpackValues(values, 77, 78))
+                    values[75]["Position"] = values[76]
+                    values[77] = environment.UDim2
+                    values[76] = values[77]["new"]
+                    values[77] = 1
+                    values[103] = 308407.0
+                    values[81] = 60
+                    values[78] = -values[81]
+                    values[79] = 0
+                    values[80] = 14
+                    values[76] = values[76](unpackValues(values, 77, 80))
+                    values[75]["Size"] = values[76]
+                    values[78] = environment.Enum
+                    values[77] = values[78]["Font"]
+                    values[76] = values[77]["GothamBold"]
+                    values[75]["Font"] = values[76]
+                    values[76] = "ACCESS KEY"
+                    values[103] = 558284.0
+                    values[75]["Text"] = values[76]
+                    values[76] = values[20]
+                    values[75]["TextColor3"] = values[76]
+                    values[76] = 9
+                    values[75]["TextSize"] = values[76]
+                    values[78] = environment.Enum
+                    values[77] = values[78]["TextXAlignment"]
+                    values[76] = values[77]["Left"]
+                    values[75]["TextXAlignment"] = values[76]
+                    values[76] = values[56]
+                    values[75]["Parent"] = values[76]
+                    values[103] = 809077.0
+                    values[77] = environment.Instance
+                    values[76] = values[77]["new"]
+                    values[77] = "Frame"
+                    values[76] = values[76](unpackValues(values, 77, 77))
+                    values[78] = environment.UDim2
+                    values[77] = values[78]["fromOffset"]
+                    values[78] = 28
+                    values[79] = 126 + values[50]
+                    values[77] = values[77](unpackValues(values, 78, 79))
+                    values[76]["Position"] = values[77]
+                    values[78] = environment.UDim2
+                    values[77] = values[78]["new"]
+                    values[103] = 969666.0
+                    values[78] = 1
+                    values[82] = 56
+                    values[79] = -values[82]
+                    values[80] = 0
+                    values[81] = 46
+                    values[77] = values[77](unpackValues(values, 78, 81))
+                    values[76]["Size"] = values[77]
+                    values[77] = values[18]
+                    values[76]["BackgroundColor3"] = values[77]
+                    values[77] = 0
+                    values[76]["BorderSizePixel"] = values[77]
+                    values[77] = values[56]
+                    values[76]["Parent"] = values[77]
+                    values[78] = environment.Instance
+                    values[77] = values[78]["new"]
+                    values[103] = 178280.0
+                    values[78] = "UICorner"
+                    values[79] = values[76]
+                    values[77] = values[77](unpackValues(values, 78, 79))
+                    values[79] = environment.UDim
+                    values[78] = values[79]["new"]
+                    values[79] = 0
+                    values[80] = 12
+                    values[78] = values[78](unpackValues(values, 79, 80))
+                    values[77]["CornerRadius"] = values[78]
+                    values[78] = environment.Instance
+                    values[77] = values[78]["new"]
+                    values[103] = 508180.0
+                    values[78] = "UIStroke"
+                    values[79] = values[76]
+                    values[77] = values[77](unpackValues(values, 78, 79))
+                    values[78] = values[25]
+                    values[77]["Color"] = values[78]
+                    values[78] = 1
+                    values[77]["Thickness"] = values[78]
+                    values[80] = environment.Enum
+                    values[79] = values[80]["ApplyStrokeMode"]
+                    values[78] = values[79]["Border"]
+                    values[77]["ApplyStrokeMode"] = values[78]
+                    values[79] = environment.Instance
+                    values[78] = values[79]["new"]
+                    values[79] = "TextBox"
+                    values[78] = values[78](unpackValues(values, 79, 79))
+                    values[103] = 675344.0
+                    values[80] = environment.UDim2
+                    values[79] = values[80]["new"]
+                    values[80] = 1
+                    values[84] = 28
+                    values[81] = -values[84]
+                    values[82] = 1
+                    values[83] = 0
+                    values[79] = values[79](unpackValues(values, 80, 83))
+                    values[78]["Size"] = values[79]
+                    values[80] = environment.UDim2
+                    values[79] = values[80]["fromOffset"]
+                    values[103] = 100105.0
+                    values[80] = 14
+                    values[81] = 0
+                    values[79] = values[79](unpackValues(values, 80, 81))
+                    values[78]["Position"] = values[79]
+                    values[79] = 1
+                    values[78]["BackgroundTransparency"] = values[79]
+                    values[79] = false
+                    values[78]["ClearTextOnFocus"] = values[79]
+                    values[103] = 710704.0
+                    values[79] = "Paste your key"
+                    values[78]["PlaceholderText"] = values[79]
+                    values[79] = values[21]
+                    values[78]["PlaceholderColor3"] = values[79]
+                    values[79] = values[37]
+                    values[79] = values[79](unpackValues(values, 80, 79))
+                    if values[79] then
+                    else
+                      values[103] = 710704.0
+                      values[79] = ""
+                    end
+                    values[103] = 382293.0
+                    values[78]["Text"] = values[79]
+                    values[79] = values[19]
+                    values[78]["TextColor3"] = values[79]
+                    values[81] = environment.Enum
+                    values[80] = values[81]["Font"]
+                    values[79] = values[80]["Code"]
+                    values[78]["Font"] = values[79]
+                    values[79] = 13
+                    values[78]["TextSize"] = values[79]
+                    values[81] = environment.Enum
+                    values[80] = values[81]["TextXAlignment"]
+                    values[103] = 165860.0
+                    values[79] = values[80]["Left"]
+                    values[78]["TextXAlignment"] = values[79]
+                    values[81] = environment.Enum
+                    values[80] = values[81]["TextTruncate"]
+                    values[79] = values[80]["AtEnd"]
+                    values[78]["TextTruncate"] = values[79]
+                    values[79] = values[76]
+                    values[78]["Parent"] = values[79]
+                    values[103] = 325019.0
+                    values[80] = values[78]["Focused"]
+                    values[80] = values[80]
+                    values[79] = values[80]["Connect"]
+                    do
+                      local cells = {}
+                      cells[0] = {values, 2}
+                      cells[1] = {values, 77}
+                      cells[2] = {values, 24}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[81] = function(...) return functions["callback_57"](captured, ...) end
+                    end
+                    values[79](unpackValues(values, 80, 81))
+                    values[80] = values[78]["FocusLost"]
+                    values[80] = values[80]
+                    values[79] = values[80]["Connect"]
+                    do
+                      local cells = {}
+                      cells[0] = {values, 2}
+                      cells[1] = {values, 77}
+                      cells[2] = {values, 25}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[81] = function(...) return functions["callback_58"](captured, ...) end
+                    end
+                    values[79](unpackValues(values, 80, 81))
+                    values[103] = 1033000.0
+                    values[80] = environment.Instance
+                    values[79] = values[80]["new"]
+                    values[80] = "Frame"
+                    values[79] = values[79](unpackValues(values, 80, 80))
+                    values[81] = environment.UDim2
+                    values[80] = values[81]["fromOffset"]
+                    values[81] = 28
+                    values[82] = 186 + values[50]
+                    values[103] = 358352.0
+                    values[80] = values[80](unpackValues(values, 81, 82))
+                    values[79]["Position"] = values[80]
+                    values[81] = environment.UDim2
+                    values[80] = values[81]["new"]
+                    values[81] = 1
+                    values[85] = 56
+                    values[82] = -values[85]
+                    values[83] = 0
+                    values[84] = 42
+                    values[80] = values[80](unpackValues(values, 81, 84))
+                    values[103] = 823199.0
+                    values[79]["Size"] = values[80]
+                    values[80] = 1
+                    values[79]["BackgroundTransparency"] = values[80]
+                    values[80] = values[56]
+                    values[79]["Parent"] = values[80]
+                    values[81] = environment.Instance
+                    values[80] = values[81]["new"]
+                    values[81] = "UIListLayout"
+                    values[82] = values[79]
+                    values[80] = values[80](unpackValues(values, 81, 82))
+                    values[83] = environment.Enum
+                    values[82] = values[83]["FillDirection"]
+                    values[81] = values[82]["Horizontal"]
+                    values[80]["FillDirection"] = values[81]
+                    values[103] = 909043.0
+                    values[82] = environment.UDim
+                    values[81] = values[82]["new"]
+                    values[82] = 0
+                    values[83] = 8
+                    values[81] = values[81](unpackValues(values, 82, 83))
+                    values[80]["Padding"] = values[81]
+                    values[83] = environment.Enum
+                    values[82] = values[83]["HorizontalAlignment"]
+                    values[81] = values[82]["Center"]
+                    values[80]["HorizontalAlignment"] = values[81]
+                    do
+                      local cells = {}
+                      cells[0] = {values, 2}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[81] = function(...) return functions["callback_59"](captured, ...) end
+                    end
+                    values[103] = 364490.0
+                    values[83] = environment.Instance
+                    values[82] = values[83]["new"]
+                    values[83] = "TextButton"
+                    values[82] = values[82](unpackValues(values, 83, 83))
+                    values[84] = environment.UDim2
+                    values[83] = values[84]["new"]
+                    values[84] = 0.5
+                    values[88] = 4
+                    values[85] = -values[88]
+                    values[86] = 1
+                    values[103] = 772591.0
+                    values[87] = 0
+                    values[83] = values[83](unpackValues(values, 84, 87))
+                    values[82]["Size"] = values[83]
+                    values[83] = values[24]
+                    values[82]["BackgroundColor3"] = values[83]
+                    values[83] = 0
+                    values[82]["BorderSizePixel"] = values[83]
+                    values[83] = "GET FREE KEY"
+                    values[82]["Text"] = values[83]
+                    values[84] = environment.Color3
+                    values[83] = values[84]["fromRGB"]
+                    values[84] = 10
+                    values[85] = 10
+                    values[86] = 10
+                    values[83] = values[83](unpackValues(values, 84, 86))
+                    values[82]["TextColor3"] = values[83]
+                    values[103] = 411674.0
+                    values[85] = environment.Enum
+                    values[84] = values[85]["Font"]
+                    values[83] = values[84]["GothamBold"]
+                    values[82]["Font"] = values[83]
+                    values[83] = 11
+                    values[82]["TextSize"] = values[83]
+                    values[83] = false
+                    values[82]["AutoButtonColor"] = values[83]
+                    values[83] = values[79]
+                    values[82]["Parent"] = values[83]
+                    values[84] = environment.Instance
+                    values[103] = 7309.0
+                    values[83] = values[84]["new"]
+                    values[84] = "UICorner"
+                    values[85] = values[82]
+                    values[83] = values[83](unpackValues(values, 84, 85))
+                    values[85] = environment.UDim
+                    values[84] = values[85]["new"]
+                    values[85] = 0
+                    values[86] = 12
+                    values[103] = 634896.0
+                    values[84] = values[84](unpackValues(values, 85, 86))
+                    values[83]["CornerRadius"] = values[84]
+                    values[83] = values[81]
+                    values[84] = values[82]
+                    values[83](unpackValues(values, 84, 84))
+                    values[84] = environment.Instance
+                    values[83] = values[84]["new"]
+                    values[84] = "TextButton"
+                    values[83] = values[83](unpackValues(values, 84, 84))
+                    values[103] = 535003.0
+                    values[85] = environment.UDim2
+                    values[84] = values[85]["new"]
+                    values[85] = 0.5
+                    values[89] = 4
+                    values[86] = -values[89]
+                    values[87] = 1
+                    values[88] = 0
+                    values[84] = values[84](unpackValues(values, 85, 88))
+                    values[83]["Size"] = values[84]
+                    values[85] = environment.Color3
+                    values[84] = values[85]["fromRGB"]
+                    values[85] = 32
+                    values[86] = 32
+                    values[87] = 32
+                    values[84] = values[84](unpackValues(values, 85, 87))
+                    values[103] = 790286.0
+                    values[83]["BackgroundColor3"] = values[84]
+                    values[84] = 0
+                    values[83]["BorderSizePixel"] = values[84]
+                    values[84] = "UNLOCK"
+                    values[83]["Text"] = values[84]
+                    values[84] = values[19]
+                    values[83]["TextColor3"] = values[84]
+                    values[86] = environment.Enum
+                    values[103] = 70703.0
+                    values[85] = values[86]["Font"]
+                    values[84] = values[85]["GothamBold"]
+                    values[83]["Font"] = values[84]
+                    values[84] = 11
+                    values[83]["TextSize"] = values[84]
+                    values[84] = false
+                    values[83]["AutoButtonColor"] = values[84]
+                    values[84] = values[79]
+                    values[83]["Parent"] = values[84]
+                    values[85] = environment.Instance
+                    values[84] = values[85]["new"]
+                    values[103] = 424459.0
+                    values[85] = "UICorner"
+                    values[86] = values[83]
+                    values[84] = values[84](unpackValues(values, 85, 86))
+                    values[86] = environment.UDim
+                    values[85] = values[86]["new"]
+                    values[86] = 0
+                    values[87] = 12
+                    values[85] = values[85](unpackValues(values, 86, 87))
+                    values[103] = 364475.0
+                    values[84]["CornerRadius"] = values[85]
+                    values[85] = environment.Instance
+                    values[84] = values[85]["new"]
+                    values[85] = "UIStroke"
+                    values[86] = values[83]
+                    values[84] = values[84](unpackValues(values, 85, 86))
+                    values[85] = values[25]
+                    values[84]["Color"] = values[85]
+                    values[85] = 1
+                    values[84]["Thickness"] = values[85]
+                    values[87] = environment.Enum
+                    values[103] = 746043.0
+                    values[86] = values[87]["ApplyStrokeMode"]
+                    values[85] = values[86]["Border"]
+                    values[84]["ApplyStrokeMode"] = values[85]
+                    values[85] = values[81]
+                    values[86] = values[83]
+                    values[85](unpackValues(values, 86, 86))
+                    values[86] = environment.Instance
+                    values[85] = values[86]["new"]
+                    values[86] = "Frame"
+                    values[85] = values[85](unpackValues(values, 86, 86))
+                    values[87] = environment.UDim2
+                    values[86] = values[87]["fromOffset"]
+                    values[87] = 28
+                    values[88] = 242 + values[50]
+                    values[86] = values[86](unpackValues(values, 87, 88))
+                    values[103] = 835025.0
+                    values[85]["Position"] = values[86]
+                    values[87] = environment.UDim2
+                    values[86] = values[87]["new"]
+                    values[87] = 1
+                    values[91] = 56
+                    values[88] = -values[91]
+                    values[89] = 0
+                    values[90] = 36
+                    values[86] = values[86](unpackValues(values, 87, 90))
+                    values[103] = 764245.0
+                    values[85]["Size"] = values[86]
+                    values[86] = values[18]
+                    values[85]["BackgroundColor3"] = values[86]
+                    values[86] = 0
+                    values[85]["BorderSizePixel"] = values[86]
+                    values[86] = values[56]
+                    values[85]["Parent"] = values[86]
+                    values[87] = environment.Instance
+                    values[86] = values[87]["new"]
+                    values[87] = "UICorner"
+                    values[88] = values[85]
+                    values[86] = values[86](unpackValues(values, 87, 88))
+                    values[88] = environment.UDim
+                    values[87] = values[88]["new"]
+                    values[88] = 0
+                    values[89] = 10
+                    values[103] = 112835.0
+                    values[87] = values[87](unpackValues(values, 88, 89))
+                    values[86]["CornerRadius"] = values[87]
+                    values[87] = environment.Instance
+                    values[86] = values[87]["new"]
+                    values[87] = "UIStroke"
+                    values[88] = values[85]
+                    values[86] = values[86](unpackValues(values, 87, 88))
+                    values[87] = values[25]
+                    values[86]["Color"] = values[87]
+                    values[87] = 1
+                    values[103] = 423649.0
+                    values[86]["Thickness"] = values[87]
+                    values[89] = environment.Enum
+                    values[88] = values[89]["ApplyStrokeMode"]
+                    values[87] = values[88]["Border"]
+                    values[86]["ApplyStrokeMode"] = values[87]
+                    values[88] = environment.Instance
+                    values[87] = values[88]["new"]
+                    values[88] = "Frame"
+                    values[87] = values[87](unpackValues(values, 88, 88))
+                    values[103] = 177560.0
+                    values[89] = environment.UDim2
+                    values[88] = values[89]["fromOffset"]
+                    values[89] = 6
+                    values[90] = 6
+                    values[88] = values[88](unpackValues(values, 89, 90))
+                    values[87]["Size"] = values[88]
+                    values[89] = environment.UDim2
+                    values[88] = values[89]["fromOffset"]
+                    values[89] = 14
+                    values[90] = 15
+                    values[88] = values[88](unpackValues(values, 89, 90))
+                    values[87]["Position"] = values[88]
+                    values[88] = values[21]
+                    values[87]["BackgroundColor3"] = values[88]
+                    values[88] = 0
+                    values[103] = 779825.0
+                    values[87]["BorderSizePixel"] = values[88]
+                    values[88] = values[85]
+                    values[87]["Parent"] = values[88]
+                    values[89] = environment.Instance
+                    values[88] = values[89]["new"]
+                    values[89] = "UICorner"
+                    values[90] = values[87]
+                    values[88] = values[88](unpackValues(values, 89, 90))
+                    values[90] = environment.UDim
+                    values[89] = values[90]["new"]
+                    values[90] = 1
+                    values[91] = 0
+                    values[89] = values[89](unpackValues(values, 90, 91))
+                    values[88]["CornerRadius"] = values[89]
+                    values[89] = environment.Instance
+                    values[103] = 1046794.0
+                    values[88] = values[89]["new"]
+                    values[89] = "TextLabel"
+                    values[88] = values[88](unpackValues(values, 89, 89))
+                    values[89] = 1
+                    values[88]["BackgroundTransparency"] = values[89]
+                    values[90] = environment.UDim2
+                    values[89] = values[90]["fromOffset"]
+                    values[90] = 28
+                    values[91] = 0
+                    values[89] = values[89](unpackValues(values, 90, 91))
+                    values[88]["Position"] = values[89]
+                    values[103] = 82684.0
+                    values[90] = environment.UDim2
+                    values[89] = values[90]["new"]
+                    values[90] = 1
+                    values[94] = 40
+                    values[91] = -values[94]
+                    values[92] = 1
+                    values[93] = 0
+                    values[89] = values[89](unpackValues(values, 90, 93))
+                    values[103] = 357277.0
+                    values[88]["Size"] = values[89]
+                    values[91] = environment.Enum
+                    values[90] = values[91]["Font"]
+                    values[89] = values[90]["Code"]
+                    values[88]["Font"] = values[89]
+                    values[89] = "No active key"
+                    values[88]["Text"] = values[89]
+                    values[89] = values[21]
+                    values[88]["TextColor3"] = values[89]
+                    values[89] = 12
+                    values[88]["TextSize"] = values[89]
+                    values[91] = environment.Enum
+                    values[90] = values[91]["TextXAlignment"]
+                    values[89] = values[90]["Left"]
+                    values[88]["TextXAlignment"] = values[89]
+                    values[89] = values[85]
+                    values[103] = 620493.0
+                    values[88]["Parent"] = values[89]
+                    values[90] = environment.Instance
+                    values[89] = values[90]["new"]
+                    values[90] = "TextLabel"
+                    values[89] = values[89](unpackValues(values, 90, 90))
+                    values[90] = 1
+                    values[89]["BackgroundTransparency"] = values[90]
+                    values[91] = environment.UDim2
+                    values[90] = values[91]["new"]
+                    values[91] = 0
+                    values[103] = 508057.0
+                    values[92] = 28
+                    values[93] = 1
+                    values[95] = 46
+                    values[94] = -values[95]
+                    values[90] = values[90](unpackValues(values, 91, 94))
+                    values[89]["Position"] = values[90]
+                    values[91] = environment.UDim2
+                    values[90] = values[91]["new"]
+                    values[103] = 247217.0
+                    values[91] = 1
+                    values[95] = 56
+                    values[92] = -values[95]
+                    values[93] = 0
+                    values[94] = 18
+                    values[90] = values[90](unpackValues(values, 91, 94))
+                    values[89]["Size"] = values[90]
+                    values[92] = environment.Enum
+                    values[91] = values[92]["Font"]
+                    values[90] = values[91]["GothamMedium"]
+                    values[89]["Font"] = values[90]
+                    values[103] = 802171.0
+                    values[90] = values[49]
+                    if not values[90] then
+                    else
+                      values[103] = 802171.0
+                      values[90] = "Keys are shared"
+                    end
+                    values[103] = 26759.0
+                    if values[90] then
+                    else
+                      values[103] = 26759.0
+                      values[90] = "Open Violence District to unlock"
+                    end
+                    values[103] = 508575.0
+                    values[89]["Text"] = values[90]
+                    values[90] = values[20]
+                    values[89]["TextColor3"] = values[90]
+                    values[90] = 10
+                    values[89]["TextSize"] = values[90]
+                    values[92] = environment.Enum
+                    values[91] = values[92]["TextXAlignment"]
+                    values[90] = values[91]["Center"]
+                    values[89]["TextXAlignment"] = values[90]
+                    values[90] = values[56]
+                    values[89]["Parent"] = values[90]
+                    values[91] = environment.Instance
+                    values[90] = values[91]["new"]
+                    values[91] = "TextLabel"
+                    values[90] = values[90](unpackValues(values, 91, 91))
+                    values[103] = 60040.0
+                    values[91] = 1
+                    values[90]["BackgroundTransparency"] = values[91]
+                    values[92] = environment.UDim2
+                    values[91] = values[92]["new"]
+                    values[92] = 0
+                    values[93] = 28
+                    values[94] = 1
+                    values[96] = 24
+                    values[95] = -values[96]
+                    values[103] = 577688.0
+                    values[91] = values[91](unpackValues(values, 92, 95))
+                    values[90]["Position"] = values[91]
+                    values[92] = environment.UDim2
+                    values[91] = values[92]["new"]
+                    values[92] = 1
+                    values[96] = 56
+                    values[93] = -values[96]
+                    values[94] = 0
+                    values[103] = 973419.0
+                    values[95] = 16
+                    values[91] = values[91](unpackValues(values, 92, 95))
+                    values[90]["Size"] = values[91]
+                    values[93] = environment.Enum
+                    values[92] = values[93]["Font"]
+                    values[91] = values[92]["Code"]
+                    values[90]["Font"] = values[91]
+                    values[91] = "KINON HUB"
+                    values[90]["Text"] = values[91]
+                    values[91] = values[21]
+                    values[90]["TextColor3"] = values[91]
+                    values[91] = 9
+                    values[90]["TextSize"] = values[91]
+                    values[103] = 156679.0
+                    values[93] = environment.Enum
+                    values[92] = values[93]["TextXAlignment"]
+                    values[91] = values[92]["Center"]
+                    values[90]["TextXAlignment"] = values[91]
+                    values[91] = values[56]
+                    values[90]["Parent"] = values[91]
+                    do
+                      local cells = {}
+                      cells[0] = {values, 2}
+                      cells[1] = {values, 59}
+                      cells[2] = {values, 55}
+                      cells[3] = {values, 53}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[91] = function(...) return functions["callback_62"](captured, ...) end
+                    end
+                    do
+                      local cells = {}
+                      cells[0] = {values, 29}
+                      cells[1] = {values, 78}
+                      cells[2] = {values, 27}
+                      cells[3] = {values, 33}
+                      cells[4] = {values, 38}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[92] = function(...) return functions["callback_64"](captured, ...) end
+                    end
+                    values[93] = environment.pcall
+                    do
+                      local cells = {}
+                      cells[0] = {values, 92}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[94] = function(...) return functions["callback_65"](captured, ...) end
+                    end
+                    values[93](unpackValues(values, 94, 94))
+                    values[93] = environment.pcall
+                    values[103] = 365507.0
+                    do
+                      local cells = {}
+                      cells[0] = {values, 5}
+                      cells[1] = {values, 92}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[94] = function(...) return functions["callback_67"](captured, ...) end
+                    end
+                    values[93](unpackValues(values, 94, 94))
+                    do
+                      local cells = {}
+                      cells[0] = {values, 89}
+                      cells[1] = {values, 22}
+                      cells[2] = {values, 23}
+                      cells[3] = {values, 20}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[93] = function(...) return functions["callback_69"](captured, ...) end
+                    end
+                    do
+                      local cells = {}
+                      cells[0] = {values, 39}
+                      cells[1] = {values, 88}
+                      cells[2] = {values, 31}
+                      cells[3] = {values, 22}
+                      cells[4] = {values, 87}
+                      cells[5] = {values, 36}
+                      cells[6] = {values, 30}
+                      cells[7] = {values, 21}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[94] = function(...) return functions["callback_70"](captured, ...) end
+                    end
+                    do
+                      local cells = {}
+                      cells[0] = {values, 42}
+                      cells[1] = {values, 43}
+                      cells[2] = {values, 39}
+                      cells[3] = {values, 82}
+                      cells[4] = {values, 31}
+                      cells[5] = {values, 21}
+                      cells[6] = {values, 24}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[95] = function(...) return functions["callback_71"](captured, ...) end
+                    end
+                    values[97] = environment.task
+                    values[96] = values[97]["spawn"]
+                    do
+                      local cells = {}
+                      cells[0] = {values, 53}
+                      cells[1] = {values, 94}
+                      cells[2] = {values, 95}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[97] = function(...) return functions["callback_72"](captured, ...) end
+                    end
+                    values[96](unpackValues(values, 97, 97))
+                    values[96] = false
+                    do
+                      local cells = {}
+                      cells[0] = {values, 96}
+                      cells[1] = {values, 38}
+                      cells[2] = {values, 83}
+                      cells[3] = {values, 22}
+                      cells[4] = {values, 2}
+                      cells[5] = {values, 84}
+                      cells[6] = {values, 93}
+                      cells[7] = {values, 34}
+                      cells[8] = {values, 94}
+                      cells[9] = {values, 32}
+                      cells[10] = {values, 19}
+                      cells[11] = {values, 25}
+                      cells[12] = {values, 8}
+                      cells[13] = {values, 91}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[97] = function(...) return functions["callback_73"](captured, ...) end
+                    end
+                    values[98] = false
+                    values[103] = 193014.0
+                    values[100] = values[82]["MouseButton1Click"]
+                    values[100] = values[100]
+                    values[99] = values[100]["Connect"]
+                    do
+                      local cells = {}
+                      cells[0] = {values, 98}
+                      cells[1] = {values, 43}
+                      cells[2] = {values, 34}
+                      cells[3] = {values, 42}
+                      cells[4] = {values, 82}
+                      cells[5] = {values, 33}
+                      cells[6] = {values, 27}
+                      cells[7] = {values, 78}
+                      cells[8] = {values, 41}
+                      cells[9] = {values, 38}
+                      cells[10] = {values, 93}
+                      cells[11] = {values, 95}
+                      cells[12] = {values, 94}
+                      cells[13] = {values, 97}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[101] = function(...) return functions["callback_76"](captured, ...) end
+                    end
+                    values[99](unpackValues(values, 100, 101))
+                    values[100] = values[83]["MouseButton1Click"]
+                    values[100] = values[100]
+                    values[99] = values[100]["Connect"]
+                    do
+                      local cells = {}
+                      cells[0] = {values, 98}
+                      cells[1] = {values, 83}
+                      cells[2] = {values, 93}
+                      cells[3] = {values, 37}
+                      cells[4] = {values, 29}
+                      cells[5] = {values, 78}
+                      cells[6] = {values, 39}
+                      cells[7] = {values, 97}
+                      cells[8] = {values, 27}
+                      cells[9] = {values, 33}
+                      cells[10] = {values, 38}
+                      cells[11] = {values, 34}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[101] = function(...) return functions["callback_78"](captured, ...) end
+                    end
+                    values[99](unpackValues(values, 100, 101))
+                    values[100] = values[72]["MouseButton1Click"]
+                    values[103] = 446243.0
+                    values[100] = values[100]
+                    values[99] = values[100]["Connect"]
+                    do
+                      local cells = {}
+                      cells[0] = {values, 92}
+                      cells[1] = {values, 91}
+                      local captured = setmetatable({}, captureMetatable)
+                      rawset(captured, false, cells)
+                      captureGroups[#captureGroups + 1] = cells
+                      values[101] = function(...) return functions["callback_80"](captured, ...) end
+                    end
+                    values[99](unpackValues(values, 100, 101))
+                    closeCapturedValues(captureGroups, values, 0)
+                    return
+                  else
+                    values[103] = 796219
+                    closeCapturedValues(captureGroups, values, 0)
+                    return
+                  end
+                end
+              end
+            end
+          end
+        end
+      else
+        values[103] = 801587
+        closeCapturedValues(captureGroups, values, 0)
+        return
+      end
+    else
+      values[103] = 279976
+      values[12] = values[6]
+      values[12](unpackValues(values, 13, 12))
+      closeCapturedValues(captureGroups, values, 0)
+      return
+    end
+  end
+end
+
+functions["callback_1"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[0] = upvalues[0]
+  values[1] = "[Panda] This script could not verify its runtime environment."
+  values[2] = 0
+  values[0](unpackValues(values, 1, 2))
+  closeCapturedValues(captureGroups, values, 0)
+  return
+end
+
+functions["callback_2"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[0] = upvalues[0]
+  values[1] = environment.game
+  values[0] = values[0](unpackValues(values, 1, 1))
+  if (values[0] == "userdata") then
+  else
+    values[0] = upvalues[1]
+    values[1] = "x"
+    values[0](unpackValues(values, 1, 1))
+  end
+  values[0] = upvalues[2]
+  values[1] = environment.game
+  values[0] = values[0](unpackValues(values, 1, 1))
+  if (values[0] == "Instance") then
+  else
+    values[0] = upvalues[1]
+    values[1] = "x"
+    values[0](unpackValues(values, 1, 1))
+  end
+  closeCapturedValues(captureGroups, values, 0)
+  return
+end
+
+functions["callback_3"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[7] = nil
+  values[1] = environment.Vector3
+  values[0] = values[1]["new"]
+  values[1] = 2
+  values[2] = 3
+  values[3] = 6
+  values[0] = values[0](unpackValues(values, 1, 3))
+  values[1] = upvalues[0]
+  values[2] = values[0]
+  values[1] = values[1](unpackValues(values, 2, 2))
+  if not (values[1] == "Vector3") then
+    values[7] = 49232
+    values[1] = upvalues[1]
+    values[2] = "x"
+    values[1](unpackValues(values, 2, 2))
+  else
+    values[7] = nil
+    values[2] = environment.math
+    values[1] = values[2]["abs"]
+    values[3] = values[0]["Magnitude"]
+    values[2] = values[3] - 7
+    values[1] = values[1](unpackValues(values, 2, 2))
+    values[7] = 534071
+    if not (0.0001 < values[1]) then
+    else
+      values[7] = 49232
+      values[1] = upvalues[1]
+      values[2] = "x"
+      values[1](unpackValues(values, 2, 2))
+    end
+  end
+  values[7] = 383828
+  values[2] = environment.UDim2
+  values[1] = values[2]["new"]
+  values[2] = 1
+  values[3] = 2
+  values[4] = 3
+  values[5] = 4
+  values[1] = values[1](unpackValues(values, 2, 5))
+  values[2] = upvalues[0]
+  values[3] = values[1]
+  values[2] = values[2](unpackValues(values, 3, 3))
+  if not (values[2] == "UDim2") then
+    values[7] = 959810
+    values[2] = upvalues[1]
+    values[3] = "x"
+    values[2](unpackValues(values, 3, 3))
+  else
+    values[7] = 383828
+    values[3] = values[1]["X"]
+    values[2] = values[3]["Offset"]
+    if not (values[2] == 2) then
+      values[7] = 959810
+      values[2] = upvalues[1]
+      values[3] = "x"
+      values[2](unpackValues(values, 3, 3))
+    else
+      values[7] = 383828
+      values[3] = values[1]["Y"]
+      values[7] = 101174
+      values[2] = values[3]["Scale"]
+      if (values[2] == 3) then
+      else
+        values[7] = 959810
+        values[2] = upvalues[1]
+        values[3] = "x"
+        values[2](unpackValues(values, 3, 3))
+      end
+    end
+  end
+  values[7] = 843521
+  closeCapturedValues(captureGroups, values, 0)
+  return
+end
+
+functions["callback_4"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[6] = nil
+  values[1] = environment.table
+  values[0] = values[1]["find"]
+  values[1] = {}
+  values[2] = 5
+  values[3] = 6
+  values[4] = 7
+  for index = 1, 3 do values[1][0 + index] = values[1 + index] end
+  values[2] = 6
+  values[0] = values[0](unpackValues(values, 1, 2))
+  if (values[0] == 2) then
+  else
+    values[6] = nil
+    values[0] = upvalues[0]
+    values[1] = "x"
+    values[0](unpackValues(values, 1, 1))
+  end
+  values[6] = 546514
+  values[1] = environment.math
+  values[0] = values[1]["clamp"]
+  values[1] = 9
+  values[2] = 0
+  values[3] = 3
+  values[0] = values[0](unpackValues(values, 1, 3))
+  if (values[0] == 3) then
+  else
+    values[6] = 546514
+    values[0] = upvalues[0]
+    values[1] = "x"
+    values[0](unpackValues(values, 1, 1))
+  end
+  values[6] = 648473
+  values[2] = "a,b,c"
+  values[2] = values[2]
+  values[1] = values[2]["split"]
+  values[3] = ","
+  values[1] = values[1](unpackValues(values, 2, 3))
+  values[0] = #values[1]
+  if (values[0] == 3) then
+  else
+    values[6] = 648473
+    values[0] = upvalues[0]
+    values[1] = "x"
+    values[0](unpackValues(values, 1, 1))
+  end
+  values[6] = 800826
+  closeCapturedValues(captureGroups, values, 0)
+  return
+end
+
+functions["callback_5"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[7] = nil
+  values[1] = environment.game
+  values[1] = values[1]
+  values[0] = values[1]["GetService"]
+  values[2] = "Players"
+  values[0] = values[0](unpackValues(values, 1, 2))
+  values[1] = upvalues[0]
+  values[2] = values[0]
+  values[1] = values[1](unpackValues(values, 2, 2))
+  if not (values[1] == "Instance") then
+    values[7] = 556449
+    values[1] = upvalues[1]
+    values[2] = "x"
+    values[1](unpackValues(values, 2, 2))
+  else
+    values[7] = nil
+    values[1] = values[0]["ClassName"]
+    values[7] = 562668
+    if (values[1] == "Players") then
+    else
+      values[7] = 556449
+      values[1] = upvalues[1]
+      values[2] = "x"
+      values[1](unpackValues(values, 2, 2))
+    end
+  end
+  values[7] = 294055
+  values[2] = environment.game
+  values[2] = values[2]
+  values[1] = values[2]["GetService"]
+  values[3] = "Workspace"
+  values[1] = values[1](unpackValues(values, 2, 3))
+  values[2] = environment.workspace
+  if (values[1] == values[2]) then
+  else
+    values[7] = 294055
+    values[1] = upvalues[1]
+    values[2] = "x"
+    values[7] = 384260
+    values[1](unpackValues(values, 2, 2))
+  end
+  values[7] = 426030
+  values[1] = environment.rawequal
+  values[2] = environment.game
+  values[4] = environment.workspace
+  values[3] = values[4]["Parent"]
+  values[1] = values[1](unpackValues(values, 2, 3))
+  if values[1] then
+  else
+    values[7] = 426030
+    values[1] = upvalues[1]
+    values[2] = "x"
+    values[1](unpackValues(values, 2, 2))
+  end
+  values[7] = 792481
+  values[1] = environment.rawequal
+  values[2] = values[0]
+  values[4] = environment.game
+  values[4] = values[4]
+  values[3] = values[4]["GetService"]
+  values[5] = "Players"
+  local results = packValues(values[3](unpackValues(values, 4, 5)))
+  registerTop = 3 + results.n - 1
+  for index = 3, registerTop do values[index] = results[index - 3 + 1] end
+  values[1] = values[1](unpackValues(values, 2, registerTop))
+  values[7] = 792481.0
+  if values[1] then
+  else
+    values[7] = 792481.0
+    values[1] = upvalues[1]
+    values[2] = "x"
+    values[1](unpackValues(values, 2, 2))
+  end
+  values[7] = 259179.0
+  closeCapturedValues(captureGroups, values, 0)
+  return
+end
+
+functions["callback_6"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[8] = nil
+  values[1] = environment.Instance
+  values[0] = values[1]["new"]
+  values[1] = "Folder"
+  values[0] = values[0](unpackValues(values, 1, 1))
+  values[2] = "F_"
+  values[3] = upvalues[0]
+  local joined = values[3]
+  for index = 2, 2, -1 do joined = values[index] .. joined end
+  values[1] = joined
+  values[2] = values[1]
+  values[0]["Name"] = values[2]
+  values[2] = values[0]["Name"]
+  if not (values[2] == values[1]) then
+    values[8] = 18315
+    values[2] = upvalues[1]
+    values[3] = "x"
+    values[2](unpackValues(values, 3, 3))
+  else
+    values[8] = nil
+    values[2] = values[0]["ClassName"]
+    if (values[2] == "Folder") then
+    else
+      values[8] = 18315
+      values[2] = upvalues[1]
+      values[3] = "x"
+      values[2](unpackValues(values, 3, 3))
+    end
+  end
+  values[8] = 364568
+  values[3] = values[0]
+  values[2] = values[3]["IsA"]
+  values[4] = "Folder"
+  values[2] = values[2](unpackValues(values, 3, 4))
+  if (values[2] == true) then
+  else
+    values[8] = 364568
+    values[2] = upvalues[1]
+    values[3] = "x"
+    values[2](unpackValues(values, 3, 3))
+  end
+  values[8] = 188824
+  values[2] = upvalues[2]
+  do
+    local cells = {}
+    cells[0] = {values, 0}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[3] = function(...) return functions["callback_7"](captured, ...) end
+  end
+  values[2](unpackValues(values, 3, 3))
+  values[2] = upvalues[2]
+  values[5] = environment.Instance
+  values[3] = values[5]["new"]
+  values[5] = "NC_"
+  values[6] = upvalues[0]
+  local joined = values[6]
+  for index = 5, 5, -1 do joined = values[index] .. joined end
+  values[4] = joined
+  values[2] = values[2](unpackValues(values, 3, 4))
+  if not values[2] then
+  else
+    values[8] = 188824
+    values[2] = upvalues[1]
+    values[3] = "x"
+    values[2](unpackValues(values, 3, 3))
+  end
+  values[8] = 64526
+  closeCapturedValues(captureGroups, values, 0)
+  return
+end
+
+functions["callback_7"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[1] = upvalues[0]
+  values[1] = values[1]
+  values[0] = values[1]["Destroy"]
+  values[0](unpackValues(values, 1, 1))
+  closeCapturedValues(captureGroups, values, 0)
+  return
+end
+
+functions["callback_8"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[4] = nil
+  values[0] = upvalues[0]
+  values[2] = environment.game
+  values[1] = values[2]["PlaceId"]
+  values[0] = values[0](unpackValues(values, 1, 1))
+  if (values[0] == "number") then
+  else
+    values[4] = nil
+    values[0] = upvalues[1]
+    values[1] = "x"
+    values[0](unpackValues(values, 1, 1))
+  end
+  values[4] = 1022908
+  values[0] = upvalues[0]
+  values[2] = environment.game
+  values[1] = values[2]["JobId"]
+  values[0] = values[0](unpackValues(values, 1, 1))
+  if (values[0] == "string") then
+  else
+    values[4] = 1022908
+    values[0] = upvalues[1]
+    values[1] = "x"
+    values[0](unpackValues(values, 1, 1))
+  end
+  values[4] = 555296
+  closeCapturedValues(captureGroups, values, 0)
+  return
+end
+
+functions["callback_9"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[6] = nil
+  values[0] = upvalues[0]
+  values[1] = environment.getgenv
+  values[0] = values[0](unpackValues(values, 1, 1))
+  if (values[0] == "function") then
+    values[6] = 169214
+    values[0] = environment.getgenv
+    values[0] = values[0](unpackValues(values, 1, 0))
+    values[1] = environment.getgenv
+    values[1] = values[1](unpackValues(values, 2, 1))
+    values[2] = upvalues[0]
+    values[3] = values[0]
+    values[2] = values[2](unpackValues(values, 3, 3))
+    if not (values[2] == "table") then
+      values[6] = 993544
+      values[2] = upvalues[1]
+      values[3] = "x"
+      values[2](unpackValues(values, 3, 3))
+    else
+      values[6] = 169214
+      values[2] = environment.rawequal
+      values[6] = 274343
+      values[3] = values[0]
+      values[4] = values[1]
+      values[2] = values[2](unpackValues(values, 3, 4))
+      if values[2] then
+      else
+        values[6] = 993544
+        values[2] = upvalues[1]
+        values[3] = "x"
+        values[2](unpackValues(values, 3, 3))
+      end
+    end
+    values[6] = 1009729
+    closeCapturedValues(captureGroups, values, 0)
+    return
+  else
+    values[6] = nil
+    closeCapturedValues(captureGroups, values, 0)
+    return
+  end
+end
+
+functions["callback_10"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[0] = upvalues[0]
+  do
+    local cells = {}
+    cells[0] = {upvalues, 1}
+    local captured = setmetatable({}, captureMetatable)
+    rawset(captured, false, cells)
+    captureGroups[#captureGroups + 1] = cells
+    values[1] = function(...) return functions["callback_11"](captured, ...) end
+  end
+  values[0] = values[0](unpackValues(values, 1, 1))
+  if not values[0] then
+  else
+    values[0] = upvalues[2]
+    values[1] = "x"
+    values[0](unpackValues(values, 1, 1))
+  end
+  closeCapturedValues(captureGroups, values, 0)
+  return
+end
+
+functions["callback_11"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[1] = environment.game
+  values[3] = "NP_"
+  values[4] = upvalues[0]
+  local joined = values[4]
+  for index = 3, 3, -1 do joined = values[index] .. joined end
+  values[2] = joined
+  values[0] = values[1][values[2]]
+  closeCapturedValues(captureGroups, values, 0)
+  return unpackValues(values, 0, 0)
+end
+
+functions["callback_12"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, 0 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[1] = upvalues[0]
+  values[2] = values[0]
+  values[1] = values[1](unpackValues(values, 2, 2))
+  if values[1] then
+  else
+    values[2] = upvalues[1]
+    values[1] = values[2] + 1
+    upvalues[1] = values[1]
+  end
+  closeCapturedValues(captureGroups, values, 0)
+  return
+end
+
+functions["callback_13"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[5] = nil
+  values[2] = environment.game
+  values[2] = values[2]
+  values[1] = values[2]["GetService"]
+  values[3] = "Players"
+  values[1] = values[1](unpackValues(values, 2, 3))
+  values[0] = values[1]["LocalPlayer"]
+  values[1] = upvalues[0]
+  values[2] = values[0]
+  values[1] = values[1](unpackValues(values, 2, 2))
+  if not (values[1] == "Instance") then
+    values[5] = 111518
+    values[1] = upvalues[2]
+    values[2] = "x"
+    values[1](unpackValues(values, 2, 2))
+  else
+    values[5] = nil
+    values[1] = upvalues[1]
+    values[2] = values[0]["UserId"]
+    values[1] = values[1](unpackValues(values, 2, 2))
+    if (values[1] == "number") then
+    else
+      values[5] = 111518
+      values[1] = upvalues[2]
+      values[2] = "x"
+      values[1](unpackValues(values, 2, 2))
+    end
+  end
+  values[5] = 244985
+  closeCapturedValues(captureGroups, values, 0)
+  return
+end
+
+functions["callback_14"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[0] = upvalues[0]
+  values[1] = environment.getmetatable
+  values[0] = values[0](unpackValues(values, 1, 1))
+  if (values[0] == "function") then
+    values[0] = environment.getmetatable
+    values[1] = environment.game
+    values[0] = values[0](unpackValues(values, 1, 1))
+    if (values[0] == "The metatable is locked") then
+    else
+      values[0] = upvalues[1]
+      values[1] = "x"
+      values[0](unpackValues(values, 1, 1))
+    end
+    closeCapturedValues(captureGroups, values, 0)
+    return
+  else
+    closeCapturedValues(captureGroups, values, 0)
+    return
+  end
+end
+
+functions["callback_15"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[2] = environment.game
+  values[2] = values[2]
+  values[1] = values[2]["GetService"]
+  values[3] = "RunService"
+  values[1] = values[1](unpackValues(values, 2, 3))
+  values[1] = values[1]
+  values[0] = values[1]["IsClient"]
+  values[0] = values[0](unpackValues(values, 1, 1))
+  if (values[0] == true) then
+  else
+    values[0] = upvalues[0]
+    values[1] = "x"
+    values[0](unpackValues(values, 1, 1))
+  end
+  closeCapturedValues(captureGroups, values, 0)
+  return
+end
+
+functions["callback_16"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[0] = environment._VERSION
+  if (values[0] == "Luau") then
+  else
+    values[0] = upvalues[0]
+    values[1] = "x"
+    values[0](unpackValues(values, 1, 1))
+  end
+  closeCapturedValues(captureGroups, values, 0)
+  return
+end
+
+functions["callback_17"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[6] = nil
+  values[1] = environment.os
+  values[0] = values[1]["clock"]
+  values[0] = values[0](unpackValues(values, 1, 0))
+  values[2] = environment.task
+  values[1] = values[2]["wait"]
+  values[1] = values[1](unpackValues(values, 2, 1))
+  values[2] = upvalues[0]
+  values[3] = values[1]
+  values[2] = values[2](unpackValues(values, 3, 3))
+  values[6] = 664627
+  if not (values[2] == "number") then
+    values[6] = 89841
+    values[2] = upvalues[1]
+    values[3] = "x"
+    values[2](unpackValues(values, 3, 3))
+  else
+    values[6] = 664627
+    if not (values[1] <= 0) then
+    else
+      values[6] = 89841
+      values[2] = upvalues[1]
+      values[3] = "x"
+      values[2](unpackValues(values, 3, 3))
+    end
+  end
+  values[6] = 584510
+  values[4] = environment.os
+  values[3] = values[4]["clock"]
+  values[3] = values[3](unpackValues(values, 4, 3))
+  values[2] = values[3] - values[0]
+  if not (values[2] <= 0) then
+  else
+    values[6] = 584510
+    values[2] = upvalues[1]
+    values[3] = "x"
+    values[2](unpackValues(values, 3, 3))
+  end
+  values[6] = 22904
+  closeCapturedValues(captureGroups, values, 0)
+  return
+end
+
+functions["callback_18"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[3] = nil
+  values[1] = environment.string
+  values[0] = values[1]["dump"]
+  if (values[0] == nil) then
+  else
+    values[3] = nil
+    values[0] = upvalues[0]
+    values[1] = "x"
+    values[0](unpackValues(values, 1, 1))
+  end
+  values[3] = 531760
+  values[0] = environment.io
+  if not (values[0] == nil) then
+    values[3] = 833256
+    values[0] = upvalues[0]
+    values[1] = "x"
+    values[0](unpackValues(values, 1, 1))
+  else
+    values[3] = 531760
+    values[0] = environment.package
+    if not (values[0] == nil) then
+      values[3] = 833256
+      values[0] = upvalues[0]
+      values[1] = "x"
+      values[0](unpackValues(values, 1, 1))
+    else
+      values[3] = 531760
+      values[0] = environment.dofile
+      if (values[0] == nil) then
+      else
+        values[3] = 531760
+        values[3] = 833256
+        values[0] = upvalues[0]
+        values[1] = "x"
+        values[0](unpackValues(values, 1, 1))
+      end
+    end
+  end
+  values[3] = 56284
+  closeCapturedValues(captureGroups, values, 0)
+  return
+end
+
+functions["trimInput"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, 0 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[3] = environment.tostring
+  values[4] = values[0]
+  if values[4] then
+  else
+    values[4] = ""
+  end
+  values[3] = values[3](unpackValues(values, 4, 4))
+  values[3] = values[3]
+  values[2] = values[3]["gsub"]
+  values[4] = "^%s+"
+  values[5] = ""
+  values[2] = values[2](unpackValues(values, 3, 5))
+  values[2] = values[2]
+  values[1] = values[2]["gsub"]
+  values[3] = "%s+$"
+  values[4] = ""
+  local results = packValues(values[1](unpackValues(values, 2, 4)))
+  registerTop = 1 + results.n - 1
+  for index = 1, registerTop do values[index] = results[index - 1 + 1] end
+  closeCapturedValues(captureGroups, values, 0)
+  return unpackValues(values, 1, registerTop)
+end
+
+functions["normalizeKeyInput"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, 0 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[2] = environment.string
+  values[1] = values[2]["upper"]
+  values[2] = upvalues[0]
+  values[3] = values[0]
+  local results = packValues(values[2](unpackValues(values, 3, 3)))
+  registerTop = 2 + results.n - 1
+  for index = 2, registerTop do values[index] = results[index - 2 + 1] end
+  local results = packValues(values[1](unpackValues(values, 2, registerTop)))
+  registerTop = 1 + results.n - 1
+  for index = 1, registerTop do values[index] = results[index - 1 + 1] end
+  closeCapturedValues(captureGroups, values, 0)
+  return unpackValues(values, 1, registerTop)
+end
+
+functions["callback_21"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[1] = environment.os
+  values[0] = values[1]["time"]
+  local results = packValues(values[0](unpackValues(values, 1, 0)))
+  registerTop = 0 + results.n - 1
+  for index = 0, registerTop do values[index] = results[index - 0 + 1] end
+  closeCapturedValues(captureGroups, values, 0)
+  return unpackValues(values, 0, registerTop)
+end
+
+functions["formatRemainingTime"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, 0 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[10] = nil
+  values[2] = environment.math
+  values[1] = values[2]["floor"]
+  values[2] = values[0] / 3600
+  values[1] = values[1](unpackValues(values, 2, 2))
+  values[3] = environment.math
+  values[2] = values[3]["floor"]
+  values[4] = values[0] % 3600
+  values[3] = values[4] / 60
+  values[10] = 93169
+  values[2] = values[2](unpackValues(values, 3, 3))
+  values[3] = values[0] % 60
+  values[5] = environment.string
+  values[4] = values[5]["format"]
+  values[5] = "%02d:%02d:%02d"
+  values[6] = values[1]
+  values[7] = values[2]
+  values[8] = values[3]
+  local results = packValues(values[4](unpackValues(values, 5, 8)))
+  registerTop = 4 + results.n - 1
+  for index = 4, registerTop do values[index] = results[index - 4 + 1] end
+  closeCapturedValues(captureGroups, values, 0)
+  return unpackValues(values, 4, registerTop)
+end
+
+functions["callback_23"] = function(upvalues, ...)
+  local passed = packValues(...)
+  local values = {}
+  for index = 0, -1 do values[index] = passed[index + 1] end
+  local registerTop = -1
+  local captureGroups = {}
+  values[12] = nil
+  values[1] = environment.game
+  values[0] = values[1]["PlaceId"]
+  values[1] = upvalues[0]
+  if not (values[0] == values[1]) then
+    values[12] = 143145
+    values[1] = environment.game
+    values[0] = values[1]["GameId"]
+    values[1] = upvalues[1]
+    if not (values[0] == values[1]) then
+      values[12] = 568077
+      values[1] = environment.type
+      values[3] = environment.game
+      values[2] = values[3]["Name"]
+      values[1] = values[1](unpackValues(values, 2, 2))
+      if (values[1] == "string") then
+        values[12] = 538294
+        values[0] = true
+      else
+        values[12] = 568077
+        values[0] = false
+      end
+      values[12] = 236893
+      if not values[0] then
+      else
+        values[12] = 236893
+        values[2] = environment.game
+        values[1] = values[2]["Name"]
+        values[1] = values[1]
+        values[0] = values[1]["lower"]
+        values[0] = values[0](unpackValues(values, 1, 1))
+      end
+      values[12] = 811825
+      if values[0] then
+      else
+        values[12] = 811825
+        values[0] = ""
+      end
+      values[12] = 530079
+      values[1] = environment.ipairs
+      values[2] = upvalues[2]
+      values[1], values[2], values[3] = values[1](unpackValues(values, 2, 2))
+      if type(values[1]) ~= "function" then
+        local source = values[1]
+        if type(source) == "table" and getmetatable(source) == nil then
+          values[1], values[2], values[3] = next, source, nil
+        else
+          values[1] = coroutine.wrap(function() for key, value in source do coroutine.yield(key, value) end end)
+          values[2], values[3] = nil, nil
+        end
+      end
+      do
+        local leaveLoop31 = 0
+        while true do
+          values[12] = 1015409
+          local results = packValues(values[1](values[2], values[3]))
+          for index = 1, 2 do values[3 + index] = results[index] end
+          if values[4] ~= nil then
+            values[3] = values[4]
+            values[12] = 471271
+            values[7] = values[0]
+            values[6] = values[7]["find"]
+            values[8] = values[5]
+            values[9] = 1
+            values[10] = true
+            values[6] = values[6](unpackValues(values, 7, 10))
+            if not values[6] then
+              continue
+            else
+              leaveLoop31 = 40
+              break
+            end
+          else
+            leaveLoop31 = 33
+            break
+          end
+        end
+        if leaveLoop31 == 33 then
+          values[12] = 1015409
+          values[1] = false
+          closeCapturedValues(captureGroups, values, 0)
           return unpackValues(values, 1, 1)
         elseif leaveLoop31 == 40 then
           values[12] = 471271
