@@ -1404,7 +1404,7 @@ functions[1] = function(upvalues, ...)
             r[138]={}
             r[139]=("MIYAKO")
             r[138][("Name")]=r[139]
-            r[139]=("by Noxi")
+            r[139]=("")
             r[138][("LoadingSubtitle")]=r[139]
             r[139]=("rbxassetid://123576909491884")
             r[138][("Icon")]=r[139]
@@ -2517,7 +2517,7 @@ functions[1] = function(upvalues, ...)
             r[144]={}
             r[145]=("MIYAKO")
             r[144][("Title")]=r[145]
-            r[145]=("Chicken or Hero helper.\010by Noxi\010Toggle: RightShift")
+            r[145]=("Chicken or Hero helper.\010Toggle: RightShift")
             r[144][("Content")]=r[145]
             do local f=r[142]; local n=2; if n<0 then n=top-142-1 end; local m=0; if m==1 then r[142]=f(unpackValues(r,143,142+n)); top=143 elseif m==0 then f(unpackValues(r,143,142+n)); top=142 else local result=packValues(f(unpackValues(r,143,142+n))); if m<0 then m=result.n end; for i=1,m do r[142+i-1]=result[i] end; top=142+m end end
             r[142]=(245752)
